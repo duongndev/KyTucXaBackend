@@ -1,12 +1,16 @@
 // ============ CONSTANTS ============
 export const ALLOWED_STATUS_TRANSITIONS = {
   draft: ["submitted"],
+  draft_offline: ["pending"],
   submitted: ["missing_document", "pending", "approved", "rejected"],
   missing_document: ["resubmitted"],
   resubmitted: ["pending", "approved", "rejected"],
   pending: ["approved", "rejected", "missing_document"],
   approved: [],
-  rejected: []
+  rejected: [],
+  pending_offline: ["received_offline"],
+  received_offline: ["processing", "rejected"],
+  processing: ["approved", "rejected", "missing_document"]
 };
 
 export const VALID_DOCUMENT_TYPES = [

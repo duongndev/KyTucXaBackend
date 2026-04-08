@@ -53,22 +53,68 @@ const checkAndResolveMissingDocument = async (formId, docType, documentId) => {
 // ============ FORM CREATION ============
 
 export const createRegistrationForm = expressAsyncHandler(async (req, res) => {
-  const { userId, submissionType = "online" } = req.body;
+  const { userId, submissionType = "online", source = "user" } = req.body;
   const currentUser = req.user;
 
   if (!userId) {
     return badRequestResponse(res, "User ID is required");
   }
 
+  // Kiểm tra quyền tạo form
+  const isAdmin = currentUser.role === 'admin';
+  const isCreatingForSelf = userId === currentUser._id.toString();
+  
+  if (submissionType === "offline" && !isAdmin && !isCreatingForSelf) {
+    return badRequestResponse(res, "Only admin can create offline forms for other users");
+  }
+
+  // Admin tạo trực tiếp (OFFLINE NO APP) → status = received_offline
+  // User tạo qua app chọn OFFLINE → status = pending_offline
+  // User tạo qua app ONLINE → status = draft
+  let initialStatus;
+  let currentStep = 1;
+  let message;
+  let instructions = null;
+
+  if (submissionType === "offline") {
+    if (source === "admin" && isAdmin) {
+      // OFFLINE NO APP: Admin tạo hộ sau khi nhận giấy
+      initialStatus = "received_offline";
+      currentStep = 0;
+      message = "Offline form created by admin. Please enter form data and upload scanned documents.";
+    } else {
+      // OFFLINE APP: User tạo qua app, sau đó in và nộp
+      initialStatus = "pending_offline";
+      currentStep = 0;
+      message = "Offline registration form created. Please download forms, print, fill and submit at the office.";
+      instructions = {
+        steps: [
+          "1. Download and print the forms",
+          "2. Fill in the information manually",
+          "3. Get required stamps/signatures",
+          "4. Submit all documents at the dormitory office",
+          "5. Bring: CCCD, Student Card, and completed forms"
+        ],
+        requiredDocuments: ["cccd_front", "cccd_back", "student_card", "stamped_form"]
+      };
+    }
+  } else {
+    // ONLINE
+    initialStatus = "draft";
+    currentStep = 1;
+    message = "Registration form created successfully";
+  }
+
   const registrationFormCode = generateRegistrationCode();
 
   const registrationForm = new RegistrationForm({
     registrationFormCode,
-    userId: currentUser.role === 'admin' ? userId : currentUser._id,
+    userId: isAdmin ? userId : currentUser._id,
     submissionType,
+    source: isAdmin ? "admin" : "user",
     formData: { residence: {}, temporary: {} },
-    status: "draft",
-    currentStep: 1,
+    status: initialStatus,
+    currentStep,
     completedSteps: [],
     isMissingDocuments: false,
     resubmitCount: 0,
@@ -79,11 +125,19 @@ export const createRegistrationForm = expressAsyncHandler(async (req, res) => {
       priorityDoc: false,
       stampedForm: false
     },
-    canSubmitWithoutStamp: true
+    canSubmitWithoutStamp: true,
+    // Cho offline no app: admin đã nhận giấy rồi
+    receivedAt: source === "admin" && isAdmin && submissionType === "offline" ? new Date() : undefined,
+    receivedBy: source === "admin" && isAdmin && submissionType === "offline" ? currentUser._id : undefined
   });
 
   await registrationForm.save();
-  createdResponse(res, "Registration form created successfully", registrationForm);
+
+  createdResponse(res, message, {
+    registrationForm,
+    instructions,
+    flow: submissionType === "offline" ? (source === "admin" ? "OFFLINE_NO_APP" : "OFFLINE_APP") : "ONLINE"
+  });
 });
 
 // ============ STEP 1: NỘI TRÚ ============
@@ -724,6 +778,281 @@ export const getRegistrationFormById = expressAsyncHandler(async (req, res) => {
   });
 });
 
+// ============ GET CURRENT DRAFT FORM ============
+
+export const getRegistrationFormCurrent = expressAsyncHandler(async (req, res) => {
+  const currentUserId = req.user._id;
+
+  // Tìm form draft mới nhất của user hiện tại
+  const registrationForm = await RegistrationForm.findOne({
+    userId: currentUserId,
+    status: "draft"
+  })
+    .sort({ createdAt: -1 })
+    .populate("userId", "fullName email studentCode phone address");
+
+  // Nếu không có draft, trả về null
+  if (!registrationForm) {
+    return successResponse(res, "No active draft form found", {
+      hasDraft: false,
+      registrationForm: null
+    });
+  }
+
+  // Lấy documents và missing documents
+  const [documents, missingDocuments] = await Promise.all([
+    RegistrationDocument.find({ registrationForm: registrationForm._id }).sort({ createdAt: -1 }),
+    RegistrationMissingDocument.find({ registrationForm: registrationForm._id }).sort({ createdAt: -1 })
+  ]);
+
+  // Tính % hoàn thành
+  const completedStepsCount = registrationForm.completedSteps.length;
+  const progressPercent = Math.round((completedStepsCount / 4) * 100);
+
+  successResponse(res, "Current draft form retrieved successfully", {
+    hasDraft: true,
+    progressPercent,
+    registrationForm: {
+      ...registrationForm.toObject(),
+      documents,
+      missingDocuments
+    }
+  });
+});
+
+// ============ ADMIN: SAVE STEP 1 & 2 FOR OFFLINE FORM ============
+// Cho phép admin nhập dữ liệu từ đơn giấy vào hệ thống
+
+export const adminSaveOfflineFormData = expressAsyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { residenceData, temporaryData } = req.body;
+
+  // Chỉ admin được dùng
+  if (req.user.role !== 'admin') {
+    return errorResponse(res, "Unauthorized - Admin only", 403);
+  }
+
+  const registrationForm = await RegistrationForm.findById(id);
+  if (!registrationForm) {
+    return errorResponse(res, "Registration form not found", 404);
+  }
+
+  // Chỉ cho phép khi status là received_offline
+  if (registrationForm.status !== "received_offline") {
+    return badRequestResponse(res, `Can only edit forms with status 'received_offline'. Current status: ${registrationForm.status}`);
+  }
+
+  // Validate Step 1 data
+  const step1Errors = validateStep1(residenceData);
+  if (step1Errors.length > 0) {
+    return badRequestResponse(res, "Step 1 validation failed", { errors: step1Errors, step: 1 });
+  }
+
+  // Validate Step 2 data
+  const step2Errors = validateStep2(temporaryData);
+  if (step2Errors.length > 0) {
+    return badRequestResponse(res, "Step 2 validation failed", { errors: step2Errors, step: 2 });
+  }
+
+  const temporaryContent = {
+    ...temporaryData,
+    ownerName: temporaryData.ownerName || "",
+    ownerRelation: temporaryData.ownerRelation || "",
+    ownerCccd: temporaryData.ownerCccd || ""
+  };
+
+  registrationForm.formData = {
+    residence: residenceData,
+    temporary: temporaryContent
+  };
+
+  // Mark steps as completed
+  if (!registrationForm.completedSteps.includes(1)) {
+    registrationForm.completedSteps.push(1);
+  }
+  if (!registrationForm.completedSteps.includes(2)) {
+    registrationForm.completedSteps.push(2);
+  }
+  registrationForm.currentStep = 3;
+
+  await registrationForm.save();
+
+  successResponse(res, "Offline form data saved successfully by admin", {
+    registrationForm,
+    nextStep: "Admin should now upload scanned documents (CCCD, Student Card, Stamped Form)"
+  });
+});
+
+// ============ ADMIN: UPLOAD DOCUMENT FOR OFFLINE FORM ============
+// Cho phép admin upload file scan từ đơn giấy
+
+export const adminUploadOfflineDocument = expressAsyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { type, fileUrl, note } = req.body;
+
+  // Chỉ admin được dùng
+  if (req.user.role !== 'admin') {
+    return errorResponse(res, "Unauthorized - Admin only", 403);
+  }
+
+  if (!type || !fileUrl) {
+    return badRequestResponse(res, "type and fileUrl are required");
+  }
+
+  if (!VALID_DOCUMENT_TYPES.includes(type)) {
+    return badRequestResponse(res, `Invalid document type. Valid types: ${VALID_DOCUMENT_TYPES.join(", ")}`);
+  }
+
+  const registrationForm = await RegistrationForm.findById(id);
+  if (!registrationForm) {
+    return errorResponse(res, "Registration form not found", 404);
+  }
+
+  // Chỉ cho phép khi status là received_offline
+  if (registrationForm.status !== "received_offline") {
+    return badRequestResponse(res, `Can only upload documents for forms with status 'received_offline'. Current status: ${registrationForm.status}`);
+  }
+
+  const existingDoc = await RegistrationDocument.findOne({
+    registrationForm: id,
+    type
+  });
+
+  let document;
+  if (existingDoc) {
+    existingDoc.fileUrl = fileUrl;
+    existingDoc.note = note;
+    existingDoc.uploadedBy = "admin";
+    existingDoc.status = "verified"; // Admin upload = auto verified
+    document = await existingDoc.save();
+  } else {
+    document = new RegistrationDocument({
+      registrationForm: id,
+      type,
+      fileUrl,
+      note,
+      uploadedBy: "admin",
+      status: "verified" // Admin upload = auto verified
+    });
+    await document.save();
+  }
+
+  if (DOCUMENT_TYPE_MAPPING[type]) {
+    registrationForm.requiredDocuments[DOCUMENT_TYPE_MAPPING[type]] = true;
+    await registrationForm.save();
+  }
+
+  const canProceed = canSubmitForm(registrationForm.requiredDocuments) && 
+                     registrationForm.requiredDocuments.stampedForm;
+
+  if (canProceed && !registrationForm.completedSteps.includes(3)) {
+    registrationForm.completedSteps.push(3);
+    await registrationForm.save();
+  }
+
+  successResponse(res, "Document uploaded successfully by admin", {
+    document,
+    canProceedToProcessing: canProceed,
+    requiredDocuments: registrationForm.requiredDocuments,
+    message: canProceed 
+      ? "All required documents uploaded. Ready to move to PROCESSING status."
+      : "Please upload remaining required documents."
+  });
+});
+
+// ============ ADMIN: MOVE TO PROCESSING ============
+
+export const moveToProcessing = expressAsyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { note } = req.body;
+
+  // Chỉ admin được dùng
+  if (req.user.role !== 'admin') {
+    return errorResponse(res, "Unauthorized - Admin only", 403);
+  }
+
+  const registrationForm = await RegistrationForm.findById(id);
+  if (!registrationForm) {
+    return errorResponse(res, "Registration form not found", 404);
+  }
+
+  // Chỉ cho phép từ received_offline -> processing
+  if (registrationForm.status !== "received_offline") {
+    return badRequestResponse(res, `Can only move forms with status 'received_offline' to processing. Current status: ${registrationForm.status}`);
+  }
+
+  // Kiểm tra đã đủ dữ liệu và tài liệu chưa
+  if (!registrationForm.completedSteps.includes(1) || !registrationForm.completedSteps.includes(2)) {
+    return badRequestResponse(res, "Cannot move to processing: Step 1 and Step 2 data must be entered first");
+  }
+
+  const missingDocs = getMissingDocs(registrationForm.requiredDocuments);
+  if (missingDocs.length > 0 || !registrationForm.requiredDocuments.stampedForm) {
+    return badRequestResponse(res, "Cannot move to processing: All documents must be uploaded first", {
+      missingDocuments: missingDocs,
+      stampedFormMissing: !registrationForm.requiredDocuments.stampedForm
+    });
+  }
+
+  const updatedForm = await RegistrationForm.findByIdAndUpdate(
+    id,
+    {
+      status: "processing",
+      processingStartedAt: new Date(),
+      processingNote: note || "",
+      processedBy: req.user._id,
+      isLocked: true
+    },
+    { new: true }
+  ).populate("userId", "fullName email studentCode phone address");
+
+  successResponse(res, "Form moved to processing status", {
+    registrationForm: updatedForm,
+    nextStep: "Review and approve/reject the application"
+  });
+});
+
+// ============ OFFLINE SUBMISSION: MARK AS RECEIVED ============
+// Luồng mới: User tạo form → In đơn → Nộp giấy → Admin tiếp nhận
+
+export const markOfflineFormReceived = expressAsyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { receivedBy, receivedAt, note } = req.body;
+
+  // Chỉ admin được dùng
+  if (req.user.role !== 'admin') {
+    return errorResponse(res, "Unauthorized - Admin only", 403);
+  }
+
+  const registrationForm = await RegistrationForm.findById(id);
+  if (!registrationForm) {
+    return errorResponse(res, "Registration form not found", 404);
+  }
+
+  // Chỉ cho phép từ pending_offline -> received_offline
+  if (registrationForm.status !== "pending_offline") {
+    return badRequestResponse(res, `Can only mark forms with status 'pending_offline' as received. Current status: ${registrationForm.status}`);
+  }
+
+  const updatedForm = await RegistrationForm.findByIdAndUpdate(
+    id,
+    {
+      status: "received_offline",
+      receivedAt: receivedAt || new Date(),
+      receivedBy: receivedBy || req.user._id,
+      receivedNote: note || "",
+      isLocked: false // Cho phép admin nhập dữ liệu sau
+    },
+    { new: true }
+  ).populate("userId", "fullName email studentCode phone address");
+
+  successResponse(res, "Offline form marked as received", {
+    registrationForm: updatedForm,
+    nextStep: "Admin should now enter form data (Step 1 & 2) and upload scanned documents",
+    note: "Paper documents received in person. Admin needs to input data into system."
+  });
+});
+
 // ============ DELETE (ONLY DRAFT) ============
 
 export const deleteRegistrationForm = expressAsyncHandler(async (req, res) => {
@@ -745,4 +1074,128 @@ export const deleteRegistrationForm = expressAsyncHandler(async (req, res) => {
   ]);
 
   successResponse(res, "Registration form deleted successfully");
+});
+
+// ============ CLAIM FORM (User liên kết form đã nộp offline) ============
+
+export const claimRegistrationForm = expressAsyncHandler(async (req, res) => {
+  const { formCode, cccd, email } = req.body;
+  const currentUser = req.user;
+
+  // Validate input
+  if (!formCode) {
+    return badRequestResponse(res, "Form code is required");
+  }
+  if (!cccd && !email) {
+    return badRequestResponse(res, "CCCD or email is required for verification");
+  }
+
+  // Tìm form theo code và status phù hợp
+  const registrationForm = await RegistrationForm.findOne({
+    registrationFormCode: formCode,
+    status: { $in: ["received_offline", "pending", "approved", "rejected"] }
+  });
+
+  if (!registrationForm) {
+    return errorResponse(res, "Form not found or not eligible for claiming", 404);
+  }
+
+  // Kiểm tra nếu form đã có userId khác
+  if (registrationForm.userId && registrationForm.userId.toString() !== currentUser._id.toString()) {
+    // Nếu form đã gán cho user khác, không cho claim
+    return badRequestResponse(res, "This form is already linked to another user account");
+  }
+
+  if (registrationForm.userId && registrationForm.userId.toString() === currentUser._id.toString()) {
+    // Đã liên kết rồi
+    return successResponse(res, "Form is already linked to your account", registrationForm);
+  }
+
+  // Verify identity bằng CCCD hoặc email trong formData
+  const residenceData = registrationForm.formData?.residence || {};
+  const formCccd = residenceData.cccd;
+  const formEmail = residenceData.email;
+
+  let isMatch = false;
+  let matchedBy = "";
+
+  if (cccd && formCccd && cccd.trim() === formCccd.trim()) {
+    isMatch = true;
+    matchedBy = "CCCD";
+  } else if (email && formEmail && email.toLowerCase().trim() === formEmail.toLowerCase().trim()) {
+    isMatch = true;
+    matchedBy = "email";
+  }
+
+  if (!isMatch) {
+    return badRequestResponse(res, "Information does not match. Please check your CCCD or email and try again.", {
+      hint: "Make sure to use the same CCCD or email that was used when submitting the form at the office"
+    });
+  }
+
+  // Gán userId cho form
+  registrationForm.userId = currentUser._id;
+  await registrationForm.save();
+
+  // Populate để trả về đầy đủ thông tin
+  const updatedForm = await RegistrationForm.findById(registrationForm._id)
+    .populate("userId", "fullName email studentCode phone address");
+
+  successResponse(res, "Form linked successfully! You can now track your application in the app.", {
+    registrationForm: updatedForm,
+    matchedBy,
+    message: "Your offline submission has been linked to your account"
+  });
+});
+
+// ============ ADMIN: ASSIGN USER TO FORM ============
+
+export const assignUserToRegistrationForm = expressAsyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { userId, verifyInfo } = req.body;
+
+  // Chỉ admin được dùng
+  if (req.user.role !== 'admin') {
+    return errorResponse(res, "Unauthorized - Admin only", 403);
+  }
+
+  if (!userId) {
+    return badRequestResponse(res, "userId is required");
+  }
+
+  const registrationForm = await RegistrationForm.findById(id);
+  if (!registrationForm) {
+    return errorResponse(res, "Registration form not found", 404);
+  }
+
+  // Kiểm tra user tồn tại
+  const User = (await import("../models/user.model.js")).default;
+  const user = await User.findById(userId);
+  if (!user) {
+    return errorResponse(res, "User not found", 404);
+  }
+
+  // Nếu form đã có userId, thông báo
+  const previousUserId = registrationForm.userId;
+
+  // Cập nhật userId
+  registrationForm.userId = userId;
+  await registrationForm.save();
+
+  const updatedForm = await RegistrationForm.findById(id)
+    .populate("userId", "fullName email studentCode phone address");
+
+  successResponse(res, "User assigned to form successfully", {
+    registrationForm: updatedForm,
+    previousUserId: previousUserId || null,
+    newUser: {
+      _id: user._id,
+      fullName: user.fullName,
+      email: user.email,
+      studentCode: user.studentCode
+    },
+    note: previousUserId 
+      ? "Form was reassigned to a different user" 
+      : "Form was previously unassigned and is now linked"
+  });
 });

@@ -29,6 +29,12 @@ router.get('/:id/status', registrationCtrl.getRegistrationStatus);
 // Get user's forms
 router.get('/my-forms', registrationCtrl.getRegistrationForms);
 
+// Get current draft form (for continuing registration)
+router.get('/my-current-draft', registrationCtrl.getRegistrationFormCurrent);
+
+// Claim form (link offline form to user account)
+router.post('/claim-form', registrationCtrl.claimRegistrationForm);
+
 // Get single form by ID
 router.get('/:id', registrationCtrl.getRegistrationFormById);
 
@@ -45,5 +51,20 @@ router.get('/', registrationCtrl.getRegistrationForms);
 router.patch('/:id/request-missing', registrationCtrl.requestMissingDocuments);
 router.patch('/:id/approve', registrationCtrl.approveRegistrationForm);
 router.patch('/:id/reject', registrationCtrl.rejectRegistrationForm);
+
+// Offline submission - mark as received (new flow: pending_offline -> received_offline)
+router.post('/:id/mark-received', registrationCtrl.markOfflineFormReceived);
+
+// Admin: Enter offline form data (Step 1 & 2)
+router.patch('/:id/offline-data', registrationCtrl.adminSaveOfflineFormData);
+
+// Admin: Upload scanned documents for offline form
+router.post('/:id/offline-documents', registrationCtrl.adminUploadOfflineDocument);
+
+// Admin: Move to processing
+router.patch('/:id/processing', registrationCtrl.moveToProcessing);
+
+// Admin: Assign user to form (for linking offline forms to user accounts)
+router.patch('/:id/assign-user', registrationCtrl.assignUserToRegistrationForm);
 
 export default router;
