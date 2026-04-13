@@ -36,11 +36,11 @@ export const successResponse = (res, messageOrData = 'Success', data = null, sta
 /**
  * Error response helper
  */
-export const errorResponse = (res, message, error = null) => {
+export const errorResponse = (res, message, statusCode = 500, error = null) => {
   // Ensure message is a string and not too long for status code
   const errorMessage = typeof message === 'string' ? message.substring(0, 100) : 'Internal server error';
-  
-  return res.status(500).json({
+
+  return res.status(statusCode).json({
     success: false,
     message: errorMessage,
     error: error ? {

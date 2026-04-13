@@ -10,7 +10,7 @@ const registrationFormSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
-    required: true
+    required: false
   },
 
   submissionType: {
@@ -28,7 +28,10 @@ const registrationFormSchema = new mongoose.Schema({
       "resubmitted",
       "pending",
       "approved",
-      "rejected"
+      "rejected",
+      "pending_offline",
+      "received_offline",
+      "processing"
     ],
     default: "draft"
   },
@@ -49,11 +52,48 @@ const registrationFormSchema = new mongoose.Schema({
 
   deadline: Date,
 
-  // Theo dõi step hiện tại (1: nội trú, 2: tạm trú, 3: upload, 4: hoàn thành)
+  // Theo dõi step hiện tại (0: offline, 1: nội trú, 2: tạm trú, 3: upload, 4: hoàn thành)
   currentStep: {
     type: Number,
-    enum: [1, 2, 3, 4],
-    default: 1
+    enum: [0, 1, 2, 3, 4],
+    default: 0
+  },
+
+  // Nguồn tạo form (user/admin)
+  source: {
+    type: String,
+    enum: ["user", "admin"],
+    default: "user"
+  },
+
+  // Thông tin tiếp nhận đơn giấy (offline)
+  receivedAt: Date,
+  receivedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User"
+  },
+  receivedNote: String,
+
+  // Thông tin xử lý (processing)
+  processingStartedAt: Date,
+  processingNote: String,
+  processedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User"
+  },
+
+  // Thông tin phê duyệt
+  approvalNotes: String,
+  approvedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User"
+  },
+
+  // Thông tin từ chối
+  rejectionReason: String,
+  rejectedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User"
   },
 
   // Các step đã hoàn thành

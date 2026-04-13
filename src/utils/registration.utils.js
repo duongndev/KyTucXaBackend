@@ -97,7 +97,7 @@ export const canSubmitForm = (requiredDocs) => {
 };
 
 export const isValidStatusTransition = (currentStatus, newStatus) => {
-  return ALLOWED_STATUS_TRANSITIONS[currentStatus]?.includes(newStatus);
+  return ALLOWED_STATUS_TRANSITIONS[currentStatus]?.includes(newStatus) || false;
 };
 
 export const buildPaginationResponse = (data, page, limit, total) => ({

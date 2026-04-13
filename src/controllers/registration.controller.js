@@ -1,13 +1,16 @@
 import RegistrationForm from "../models/registration/registrationForm.model.js";
 import RegistrationDocument from "../models/registration/registrationDocument.model.js";
 import RegistrationMissingDocument from "../models/registration/registrationMissingDocument.model.js";
+import User from "../models/user/user.model.js";
 import { generateRegistrationCode } from "../utils/generateCode.js";
 import {
   successResponse,
   errorResponse,
   badRequestResponse,
+  forbiddenResponse,
   createdResponse,
 } from "../utils/response.js";
+import { logSecurityEvent } from "../utils/security.logger.js";
 import expressAsyncHandler from "express-async-handler";
 import mongoose from "mongoose";
 import {
@@ -53,19 +56,34 @@ const checkAndResolveMissingDocument = async (formId, docType, documentId) => {
 // ============ FORM CREATION ============
 
 export const createRegistrationForm = expressAsyncHandler(async (req, res) => {
-  const { userId, submissionType = "online", source = "user" } = req.body;
+  const { submissionType = "online", source = "user", userId: bodyUserId } = req.body;
   const currentUser = req.user;
-
-  if (!userId) {
-    return badRequestResponse(res, "User ID is required");
-  }
 
   // Kiểm tra quyền tạo form
   const isAdmin = currentUser.role === 'admin';
-  const isCreatingForSelf = userId === currentUser._id.toString();
-  
+
+  // Admin có thể tạo cho user khác (bodyUserId), ngược lại lấy từ currentUser
+  const userId = isAdmin && bodyUserId ? bodyUserId : currentUser._id;
+
+  // Chỉ admin được tạo offline form cho người khác
+  const isCreatingForSelf = userId.toString() === currentUser._id.toString();
   if (submissionType === "offline" && !isAdmin && !isCreatingForSelf) {
     return badRequestResponse(res, "Only admin can create offline forms for other users");
+  }
+
+  // Kiểm tra user đã có form active nào chưa (chỉ cho phép 1 form)
+  // Admin tạo cho người khác cũng phải tuân theo luật này
+  const existingForm = await RegistrationForm.findOne({
+    userId: userId,
+    status: { $nin: ["rejected"] }
+  });
+
+  if (existingForm) {
+    return badRequestResponse(res, "Bạn đã có một đơn đăng ký đang xử lý. Vui lòng hoàn thành hoặc xóa đơn hiện tại trước khi tạo đơn mới.", {
+      existingFormId: existingForm._id,
+      existingFormCode: existingForm.registrationFormCode,
+      existingStatus: existingForm.status
+    });
   }
 
   // Admin tạo trực tiếp (OFFLINE NO APP) → status = received_offline
@@ -795,6 +813,7 @@ export const getRegistrationFormCurrent = expressAsyncHandler(async (req, res) =
   if (!registrationForm) {
     return successResponse(res, "No active draft form found", {
       hasDraft: false,
+      progressPercent: 0,
       registrationForm: null
     });
   }
@@ -1053,27 +1072,78 @@ export const markOfflineFormReceived = expressAsyncHandler(async (req, res) => {
   });
 });
 
-// ============ DELETE (ONLY DRAFT) ============
+// ============ DELETE (ONLY DRAFT / REJECTED) ============
 
 export const deleteRegistrationForm = expressAsyncHandler(async (req, res) => {
   const { id } = req.params;
+  const currentUser = req.user;
 
+  // 1. Tìm form
   const registrationForm = await RegistrationForm.findById(id);
   if (!registrationForm) {
     return errorResponse(res, "Registration form not found", 404);
   }
 
-  if (!["draft", "rejected"].includes(registrationForm.status)) {
-    return badRequestResponse(res, "Can only delete forms with status: draft or rejected");
+  // 2. Kiểm tra quyền sở hữu — student chỉ được xóa form của chính mình
+  const isAdmin = currentUser.role === 'admin';
+  const isOwner = registrationForm.userId &&
+    registrationForm.userId.toString() === currentUser._id.toString();
+
+  if (!isAdmin && !isOwner) {
+    await logSecurityEvent("UNAUTHORIZED_DELETE_ATTEMPT", {
+      userId: currentUser._id,
+      targetFormId: id,
+      targetFormCode: registrationForm.registrationFormCode,
+      ip: req.ip,
+      userAgent: req.get("User-Agent")
+    });
+    return forbiddenResponse(res, "Bạn không có quyền xóa đơn đăng ký này");
   }
 
-  await Promise.all([
-    RegistrationDocument.deleteMany({ registrationForm: id }),
-    RegistrationMissingDocument.deleteMany({ registrationForm: id }),
-    RegistrationForm.findByIdAndDelete(id)
-  ]);
+  // 3. Chỉ được xóa khi trạng thái là draft hoặc rejected
+  if (!["draft", "rejected"].includes(registrationForm.status)) {
+    return badRequestResponse(
+      res,
+      `Chỉ được xóa đơn ở trạng thái 'draft' hoặc 'rejected'. Trạng thái hiện tại: ${registrationForm.status}`
+    );
+  }
 
-  successResponse(res, "Registration form deleted successfully");
+  // 4. Dùng transaction để đảm bảo tính toàn vẹn dữ liệu
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    await RegistrationDocument.deleteMany({ registrationForm: id }, { session });
+    await RegistrationMissingDocument.deleteMany({ registrationForm: id }, { session });
+    await RegistrationForm.findByIdAndDelete(id, { session });
+
+    await session.commitTransaction();
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+
+  // 5. Ghi audit log
+  await logSecurityEvent("REGISTRATION_FORM_DELETED", {
+    deletedBy: currentUser._id,
+    deletedByRole: currentUser.role,
+    formId: id,
+    formCode: registrationForm.registrationFormCode,
+    formStatus: registrationForm.status,
+    formOwnerId: registrationForm.userId,
+    ip: req.ip,
+    userAgent: req.get("User-Agent")
+  });
+
+  // 6. Trả về metadata
+  successResponse(res, "Xóa đơn đăng ký thành công", {
+    deletedFormId: id,
+    deletedFormCode: registrationForm.registrationFormCode,
+    deletedStatus: registrationForm.status,
+    deletedAt: new Date()
+  });
 });
 
 // ============ CLAIM FORM (User liên kết form đã nộp offline) ============
@@ -1169,7 +1239,6 @@ export const assignUserToRegistrationForm = expressAsyncHandler(async (req, res)
   }
 
   // Kiểm tra user tồn tại
-  const User = (await import("../models/user.model.js")).default;
   const user = await User.findById(userId);
   if (!user) {
     return errorResponse(res, "User not found", 404);
@@ -1199,3 +1268,8 @@ export const assignUserToRegistrationForm = expressAsyncHandler(async (req, res)
       : "Form was previously unassigned and is now linked"
   });
 });
+
+
+// Preview đơn đăng ký nội trú
+
+// Preview đơn đăng ký tạm trú

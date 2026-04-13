@@ -30,7 +30,7 @@ router.get('/:id/status', registrationCtrl.getRegistrationStatus);
 router.get('/my-forms', registrationCtrl.getRegistrationForms);
 
 // Get current draft form (for continuing registration)
-router.get('/my-current-draft', registrationCtrl.getRegistrationFormCurrent);
+router.get('/my-current', registrationCtrl.getRegistrationFormCurrent);
 
 // Claim form (link offline form to user account)
 router.post('/claim-form', registrationCtrl.claimRegistrationForm);
