@@ -13,6 +13,7 @@ const FOLDER_TYPE = {
   image: "images",
   document: "documents",
   avatar: "avatars",
+  signature: "signatures",
 };
 
 /** MIME types được chấp nhận */
@@ -234,6 +235,132 @@ export const uploadMultiple = async (files, userId) => {
   });
 
   return { uploaded, failed };
+};
+
+// ─── Authenticated Signature Delivery ─────────────────────────────────
+
+/**
+ * Upload chữ ký dạng Base64 lên Cloudinary dưới dạng ẩn (authenticated).
+ *
+ * @param {string} base64Data Chuỗi base64 của chữ ký
+ * @param {string} userId ID của user
+ * @returns {Promise<UploadResult>}
+ */
+export const uploadSignatureBase64 = async (base64Data, userId) => {
+  const folder = buildFolder(userId, "signature");
+  const publicId = `signature_${userId}_${Date.now()}`;
+
+  try {
+    const result = await cloudinary.v2.uploader.upload(base64Data, {
+      folder,
+      public_id: publicId,
+      resource_type: "image",
+      type: "authenticated",    // QUAN TRỌNG: Thiết lập ẩn
+      overwrite: true,
+      quality: "auto",
+      fetch_format: "auto",
+    });
+
+    return {
+      url: result.secure_url,
+      publicId: result.public_id,
+      folder: result.folder,
+      format: result.format,
+      sizeBytes: result.bytes,
+      resourceType: "image",
+    };
+  } catch (error) {
+    throw new Error(`Upload chữ ký thất bại: ${error.message}`);
+  }
+};
+
+/**
+ * Tạo Signed URL có thời hạn cho phép hiển thị ảnh chữ ký "authenticated"
+ *
+ * @param {string} publicId Mã publicId của chữ ký
+ * @param {number} expiresInSeconds Thời gian sống của link (mặc định: 3600s = 1 giờ)
+ * @returns {string} URL đã được ký (Signed URL)
+ */
+export const getSignedSignatureUrl = (publicId, expiresInSeconds = 3600) => {
+  if (!publicId) return null;
+  // Tính expiration time dính vào URL
+  const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;
+  
+  return cloudinary.v2.url(publicId, {
+    sign_url: true,
+    type: "authenticated",
+    secure: true,
+    expires_at: expiresAt
+  });
+};
+
+// ─── Authenticated Document Delivery (CCCD / Thẻ SV) ─────────────────────────
+
+/**
+ * Danh sách loại giấy tờ cần ẩn (type=authenticated).
+ * Các loại không nằm trong danh sách này vẫn upload public bình thường.
+ */
+export const SENSITIVE_DOC_TYPES = ["cccd_front", "cccd_back", "student_card"];
+
+/**
+ * Upload file giấy tờ nhạy cảm (CCCD, thẻ SV) lên Cloudinary
+ * dưới chế độ authenticated — ẩn hoàn toàn với công chúng.
+ *
+ * @param {string} filePath  Đường dẫn file tạm trên server (từ multer diskStorage)
+ * @param {string} userId    ID của user
+ * @param {string} docType   Loại giấy tờ (cccd_front | cccd_back | student_card)
+ * @param {string} originalname  Tên file gốc
+ * @returns {Promise<{url, publicId, folder, format, sizeBytes}>}
+ */
+export const uploadSensitiveDocument = async (filePath, userId, docType, originalname) => {
+  const folder = `${ROOT_FOLDER}/${userId}/sensitive_docs`;
+  const publicId = buildPublicId(`${docType}_${originalname}`);
+
+  try {
+    const result = await cloudinary.v2.uploader.upload(filePath, {
+      folder,
+      public_id: publicId,
+      resource_type: "image",
+      type: "authenticated",   // Ẩn hoàn toàn — chặn truy cập công khai
+      overwrite: false,
+      quality: "auto",
+      fetch_format: "auto",
+    });
+
+    await cleanup(filePath);
+
+    return {
+      url: result.secure_url,
+      publicId: result.public_id,
+      folder: result.folder,
+      format: result.format,
+      sizeBytes: result.bytes,
+      resourceType: "image",
+    };
+  } catch (error) {
+    await cleanup(filePath);
+    throw new Error(`Upload giấy tờ nhạy cảm thất bại: ${error.message}`);
+  }
+};
+
+/**
+ * Tạo Signed URL có thời hạn để hiển thị ảnh giấy tờ nhạy cảm.
+ * Mặc định sống 30 phút — đủ để Admin xem xét, frontend load.
+ *
+ * @param {string} publicId        Mã publicId lưu trong DB
+ * @param {number} expiresInSeconds Thời gian sống (mặc định: 1800s = 30 phút)
+ * @returns {string|null}
+ */
+export const getSignedDocumentUrl = (publicId, expiresInSeconds = 1800) => {
+  if (!publicId) return null;
+  const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;
+
+  return cloudinary.v2.url(publicId, {
+    sign_url: true,
+    type: "authenticated",
+    secure: true,
+    expires_at: expiresAt
+  });
 };
 
 // ─── Delete ───────────────────────────────────────────────────────────────────

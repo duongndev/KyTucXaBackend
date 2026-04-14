@@ -25,6 +25,13 @@ const RegistrationDocumentSchema = new mongoose.Schema({
     required: true
   },
 
+  // Lưu Cloudinary public_id cho giấy tờ nhạy cảm (CCCD, thẻ SV)
+  // Dùng để sinh Signed URL thay vì lưu raw URL public
+  publicId: {
+    type: String,
+    default: null
+  },
+
   status: {
     type: String,
     enum: ["pending", "approved", "rejected", "verified"],

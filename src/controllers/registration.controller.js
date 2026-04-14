@@ -13,6 +13,9 @@ import {
 import { logSecurityEvent } from "../utils/security.logger.js";
 import expressAsyncHandler from "express-async-handler";
 import mongoose from "mongoose";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import {
   ALLOWED_STATUS_TRANSITIONS,
   VALID_DOCUMENT_TYPES,
@@ -25,6 +28,17 @@ import {
   isValidStatusTransition,
   buildPaginationResponse
 } from "../utils/registration.utils.js";
+import ejs from "ejs";
+import {
+  uploadSignatureBase64,
+  getSignedSignatureUrl,
+  uploadSensitiveDocument,
+  getSignedDocumentUrl,
+  SENSITIVE_DOC_TYPES
+} from "../services/cloudinaryUpload.service.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const checkAndResolveMissingDocument = async (formId, docType, documentId) => {
   const missingDoc = await RegistrationMissingDocument.findOne({
@@ -247,10 +261,22 @@ export const saveStep2 = expressAsyncHandler(async (req, res) => {
 
 export const uploadDocument = expressAsyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { type, fileUrl, note } = req.body;
+  // fileUrl: URL public (cho stamped_form, priority_proof)
+  // filePath + originalname: cho luồng sensitive (CCCD, thẻ SV) — upload qua multer trước
+  const { type, fileUrl, filePath, originalname, note } = req.body;
 
-  if (!type || !fileUrl) {
-    return badRequestResponse(res, "type and fileUrl are required");
+  if (!type) {
+    return badRequestResponse(res, "type is required");
+  }
+
+  // Giấy tờ nhạy cảm yêu cầu filePath (upload từ server qua authenticated)
+  // Giấy tờ thường yêu cầu fileUrl (Frontend đã upload lên public Cloudinary)
+  const isSensitive = SENSITIVE_DOC_TYPES.includes(type);
+  if (isSensitive && !filePath) {
+    return badRequestResponse(res, `${type} là giấy tờ nhạy cảm. Vui lòng gửi kèm filePath thay vì fileUrl.`);
+  }
+  if (!isSensitive && !fileUrl) {
+    return badRequestResponse(res, "fileUrl is required");
   }
 
   if (!VALID_DOCUMENT_TYPES.includes(type)) {
@@ -266,6 +292,27 @@ export const uploadDocument = expressAsyncHandler(async (req, res) => {
     return badRequestResponse(res, "Cannot upload documents at this stage");
   }
 
+  // ── Xử lý upload tuỳ loại giấy tờ ────────────────────────────────────────
+  let finalFileUrl = fileUrl;
+  let cloudinaryPublicId = null;
+
+  if (isSensitive) {
+    // Upload lên Cloudinary với type=authenticated, lấy publicId
+    try {
+      const uploadResult = await uploadSensitiveDocument(
+        filePath,
+        req.user._id.toString(),
+        type,
+        originalname || type
+      );
+      finalFileUrl = uploadResult.url;       // secure_url (chỉ dùng metadata)
+      cloudinaryPublicId = uploadResult.publicId; // Dùng để sinh Signed URL sau này
+    } catch (uploadErr) {
+      return errorResponse(res, `Upload ${type} thất bại: ${uploadErr.message}`, 500);
+    }
+  }
+
+  // ── Lưu / cập nhật document vào DB ───────────────────────────────────────
   const existingDoc = await RegistrationDocument.findOne({
     registrationForm: id,
     type
@@ -273,7 +320,8 @@ export const uploadDocument = expressAsyncHandler(async (req, res) => {
 
   let document;
   if (existingDoc) {
-    existingDoc.fileUrl = fileUrl;
+    existingDoc.fileUrl = finalFileUrl;
+    existingDoc.publicId = cloudinaryPublicId;  // null nếu không phải sensitive
     existingDoc.note = note;
     existingDoc.status = "pending";
     document = await existingDoc.save();
@@ -281,7 +329,8 @@ export const uploadDocument = expressAsyncHandler(async (req, res) => {
     document = new RegistrationDocument({
       registrationForm: id,
       type,
-      fileUrl,
+      fileUrl: finalFileUrl,
+      publicId: cloudinaryPublicId,
       note,
       uploadedBy: "student",
       status: "pending"
@@ -291,11 +340,11 @@ export const uploadDocument = expressAsyncHandler(async (req, res) => {
 
   if (DOCUMENT_TYPE_MAPPING[type]) {
     registrationForm.requiredDocuments[DOCUMENT_TYPE_MAPPING[type]] = true;
-    
+
     if (type === 'stamped_form' && registrationForm.status === 'missing_document') {
       await checkAndResolveMissingDocument(id, 'stamped_form', document._id);
     }
-    
+
     await registrationForm.save();
   }
 
@@ -310,8 +359,108 @@ export const uploadDocument = expressAsyncHandler(async (req, res) => {
     await registrationForm.save();
   }
 
+  // Sinh Signed URL nếu là giấy tờ nhạy cảm (30 phút)
+  const signedUrl = cloudinaryPublicId ? getSignedDocumentUrl(cloudinaryPublicId) : null;
+
   successResponse(res, "Document uploaded successfully", {
-    document,
+    document: {
+      ...document.toObject(),
+      publicId: undefined,  // ẩn publicId khỏi response
+      signedUrl             // URL tạm thời 30 phút để preview ngay sau upload
+    },
+    canSubmit,
+    missingDocs,
+    requiredDocuments: registrationForm.requiredDocuments,
+    currentStep: registrationForm.currentStep
+  });
+});
+
+// ============ STEP 3b: UPLOAD CCCD / THẺ SV (SENSITIVE — AUTHENTICATED) ============
+
+export const uploadSensitiveDocumentHandler = expressAsyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { type, note } = req.body;
+
+  if (!req.file) {
+    return badRequestResponse(res, "Chưa chọn file. Vui lòng gửi file qua field 'image'.");
+  }
+
+  if (!type || !SENSITIVE_DOC_TYPES.includes(type)) {
+    return badRequestResponse(res, `type phải là một trong: ${SENSITIVE_DOC_TYPES.join(", ")}`);
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return badRequestResponse(res, "Invalid registration form ID");
+  }
+
+  const registrationForm = await RegistrationForm.findById(id);
+  if (!registrationForm) {
+    return errorResponse(res, "Registration form not found", 404);
+  }
+
+  if (!["draft", "submitted", "missing_document"].includes(registrationForm.status)) {
+    return badRequestResponse(res, "Cannot upload documents at this stage");
+  }
+
+  // Upload lên Cloudinary type=authenticated
+  let uploadResult;
+  try {
+    uploadResult = await uploadSensitiveDocument(
+      req.file.path,
+      req.user._id.toString(),
+      type,
+      req.file.originalname
+    );
+  } catch (uploadErr) {
+    return errorResponse(res, `Upload ${type} thất bại: ${uploadErr.message}`, 500);
+  }
+
+  // Lưu / cập nhật vào DB
+  const existingDoc = await RegistrationDocument.findOne({ registrationForm: id, type });
+
+  let document;
+  if (existingDoc) {
+    existingDoc.fileUrl = uploadResult.url;
+    existingDoc.publicId = uploadResult.publicId;
+    existingDoc.note = note;
+    existingDoc.status = "pending";
+    document = await existingDoc.save();
+  } else {
+    document = await new RegistrationDocument({
+      registrationForm: id,
+      type,
+      fileUrl: uploadResult.url,
+      publicId: uploadResult.publicId,
+      note,
+      uploadedBy: "student",
+      status: "pending"
+    }).save();
+  }
+
+  // Đánh dấu requiredDocuments
+  if (DOCUMENT_TYPE_MAPPING[type]) {
+    registrationForm.requiredDocuments[DOCUMENT_TYPE_MAPPING[type]] = true;
+    await registrationForm.save();
+  }
+
+  const canSubmit = canSubmitForm(registrationForm.requiredDocuments);
+  const missingDocs = getMissingDocs(registrationForm.requiredDocuments);
+
+  if (canSubmit && registrationForm.currentStep === 3) {
+    registrationForm.currentStep = 4;
+    if (!registrationForm.completedSteps.includes(3)) registrationForm.completedSteps.push(3);
+    await registrationForm.save();
+  }
+
+  // Trả về Signed URL 30 phút để preview ngay
+  const signedUrl = getSignedDocumentUrl(uploadResult.publicId);
+
+  successResponse(res, `Upload ${type} thành công`, {
+    document: {
+      ...document.toObject(),
+      publicId: undefined,   // ẩn publicId khỏi response
+      signedUrl              // Signed URL 30 phút
+    },
     canSubmit,
     missingDocs,
     requiredDocuments: registrationForm.requiredDocuments,
@@ -355,6 +504,22 @@ export const submitRegistrationForm = expressAsyncHandler(async (req, res) => {
     });
   }
 
+  // ── Upload chữ ký Base64 lên Cloudinary (type=authenticated) trước khi mở transaction ──
+  let signaturePublicId = null;
+  if (signature) {
+    // Chấp nhận cả dạng base64 thuần và dạng Data URL (data:image/png;base64,...)
+    const isBase64 = signature.startsWith("data:") || /^[A-Za-z0-9+/=]+$/.test(signature.substring(0, 20));
+    if (!isBase64) {
+      return badRequestResponse(res, "Chữ ký không hợp lệ. Vui lòng ký lại.");
+    }
+    try {
+      const uploadResult = await uploadSignatureBase64(signature, req.user._id.toString());
+      signaturePublicId = uploadResult.publicId;
+    } catch (uploadError) {
+      return errorResponse(res, `Không thể lưu chữ ký: ${uploadError.message}`, 500);
+    }
+  }
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -365,7 +530,8 @@ export const submitRegistrationForm = expressAsyncHandler(async (req, res) => {
         isLocked: true,
         status: "submitted",
         submittedAt: new Date(),
-        signature: signature,
+        // Lưu publicId thay vì raw Base64 — giữ DB nhẹ
+        signature: signaturePublicId,
         currentStep: 4
       },
       { session, new: true }
@@ -389,8 +555,14 @@ export const submitRegistrationForm = expressAsyncHandler(async (req, res) => {
     await lockedForm.save({ session });
     await session.commitTransaction();
 
+    // Tạo Signed URL 1h để trả về cho frontend preview ngay sau khi submit
+    const signatureUrl = getSignedSignatureUrl(signaturePublicId);
+
     successResponse(res, "Registration form submitted successfully", {
-      registrationForm: lockedForm,
+      registrationForm: {
+        ...lockedForm.toObject(),
+        signatureUrl   // URL hiển thị tạm thời (1h)
+      },
       needStampedForm: !lockedForm.requiredDocuments.stampedForm,
       stampedFormDeadline: lockedForm.stampedFormDeadline,
       message: lockedForm.requiredDocuments.stampedForm 
@@ -545,7 +717,9 @@ export const getRegistrationStatus = expressAsyncHandler(async (req, res) => {
         uploaded: documents.map(d => ({
           type: d.type,
           status: d.status,
-          uploadedAt: d.createdAt
+          uploadedAt: d.createdAt,
+          // Sinh Signed URL 30 phút cho tài liệu nhạy cảm, null nếu không có publicId
+          signedUrl: d.publicId ? getSignedDocumentUrl(d.publicId) : d.fileUrl
         }))
       },
       step4_submitted: {
@@ -592,7 +766,11 @@ export const getRegistrationStatus = expressAsyncHandler(async (req, res) => {
     statusDetail.pendingActions.push(`Bổ sung tài liệu: ${missingDocuments.map(m => m.documentType).join(", ")}`);
   }
 
-  successResponse(res, "Registration status retrieved", statusDetail);
+  successResponse(res, "Registration status retrieved", {
+    ...statusDetail,
+    // Signed URL có thời hạn 1 giờ — Frontend dùng để hiển thị preview chữ ký
+    signatureUrl: getSignedSignatureUrl(registrationForm.signature)
+  });
 });
 
 // ============ ADMIN: REQUEST MISSING DOCUMENTS ============
@@ -777,6 +955,10 @@ export const getRegistrationForms = expressAsyncHandler(async (req, res) => {
 export const getRegistrationFormById = expressAsyncHandler(async (req, res) => {
   const { id } = req.params;
 
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return badRequestResponse(res, `Invalid registration form ID format: ${id}. Please check the URL.`);
+  }
+
   const registrationForm = await RegistrationForm.findById(id)
     .populate("userId", "fullName email studentCode phone address");
 
@@ -789,9 +971,20 @@ export const getRegistrationFormById = expressAsyncHandler(async (req, res) => {
     RegistrationMissingDocument.find({ registrationForm: id }).sort({ createdAt: -1 })
   ]);
 
+  const signatureUrl = getSignedSignatureUrl(registrationForm.signature);
+
+  // Enrich mỗi document: ẩn publicId, thêm signedUrl 30 phút nếu là tài liệu nhạy cảm
+  const enrichedDocuments = documents.map(d => ({
+    ...d.toObject(),
+    publicId: undefined,
+    signedUrl: d.publicId ? getSignedDocumentUrl(d.publicId) : d.fileUrl
+  }));
+
   successResponse(res, "Registration form retrieved successfully", {
     ...registrationForm.toObject(),
-    documents,
+    signature: undefined,
+    signatureUrl,
+    documents: enrichedDocuments,
     missingDocuments
   });
 });
@@ -1270,6 +1463,125 @@ export const assignUserToRegistrationForm = expressAsyncHandler(async (req, res)
 });
 
 
-// Preview đơn đăng ký nội trú
 
-// Preview đơn đăng ký tạm trú
+// Preview đơn đăng ký nội trú dạng HTML
+export const previewResidenceFormHTML = expressAsyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const registrationForm = await RegistrationForm.findById(id)
+    .populate("userId", "fullName email studentCode phone address");
+
+  if (!registrationForm) {
+    return errorResponse(res, "Registration form not found", 404);
+  }
+
+  const residenceData = registrationForm.formData?.residence || {};
+  
+  // Đọc template HTML
+  const templatePath = path.join(__dirname, "../templates/documents/don_dang_ky_KTX.html");
+  let template = fs.readFileSync(templatePath, "utf-8");
+
+  // format date
+  const formatDate = (dateStr) => {
+    if (!dateStr) return "";
+    const date = new Date(dateStr);
+    return date.toLocaleDateString("vi-VN");
+  };
+
+  // format gender
+  const formatGender = (gender) => {
+    if (!gender) return "";
+    return gender === "male" ? "Nam" : "Nữ";
+  };
+
+  // Cấu hình dữ liệu cho EJS
+  const templateData = {
+    hoTen: residenceData.fullName || "",
+    gioiTinh: formatGender(residenceData.gender) || "",
+    ngaySinh: formatDate(residenceData.dateOfBirth) || "",
+    cccd: residenceData.cccd || "",
+    ngayCapCccd: residenceData.cccdIdIssueDate || "",
+    noiCapCccd: residenceData.cccdIdIssuePlace || "",
+    hoKhauThuongTru: residenceData.permanentAddress || "",
+    soDienThoai: residenceData.phoneNumber || "",
+    email: residenceData.email || "",
+    lienHeBaoTin: residenceData.emergencyContact || "",
+    coSoDaoTao: residenceData.schoolName || "",
+    nienKhoa: residenceData.academicYear || "",
+    lop: residenceData.className || "",
+    khoa: residenceData.department || "",
+    theSinhVien: residenceData.studentId || "",
+    doiTuongUuTien: residenceData.priorityType || "", // Có thể trống nếu không có ưu tiên
+    khuKtx: residenceData.dormName || "",
+    thoiGianThue: residenceData.duration || ""
+  };
+
+  try {
+    // Render file theo chuẩn EJS Engine
+    const renderedHtml = ejs.render(template, templateData);
+    
+    // Set content type và trả về HTML Output
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(renderedHtml);
+  } catch (error) {
+    return errorResponse(res, `EJS Render Error: ${error.message}`, 500);
+  }
+});
+
+
+// Preview đơn đăng ký tạm trú dạng HTML
+export const previewTemporaryFormHTML = expressAsyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const registrationForm = await RegistrationForm.findById(id)
+    .populate("userId", "fullName email studentCode phone address");
+
+  if (!registrationForm) {
+    return errorResponse(res, "Registration form not found", 404);
+  }
+
+  const temporaryData = registrationForm.formData?.temporary || {};
+  
+  // Đọc template HTML
+  const templatePath = path.join(__dirname, "../templates/documents/don_tam_tru_KTX.html");
+  let template = fs.readFileSync(templatePath, "utf-8");
+
+  // format date
+  const formatDate = (dateStr) => {
+    if (!dateStr) return "";
+    const date = new Date(dateStr);
+    return date.toLocaleDateString("vi-VN");
+  };
+
+  // format gender
+  const formatGender = (gender) => {
+    if (!gender) return "";
+    return gender === "male" ? "Nam" : "Nữ";
+  };
+
+  // Cấu hình dữ liệu cho EJS
+  const templateData = {
+    noiNhan: temporaryData.receiver || "",
+    hoTen: temporaryData.fullName || "",
+    ngaySinh: formatDate(temporaryData.dateOfBirth) || "",
+    gioiTinh: formatGender(temporaryData.gender) || "",
+    soDienThoai: temporaryData.phoneNumber || "",
+    email: temporaryData.email || "",
+    chuHo: temporaryData.ownerName || "",
+    moiQuanHe: temporaryData.ownerRelation || "",
+    noiDungDeNghi: temporaryData.requestContent || "",
+    cccd: temporaryData.cccd || "",
+    ownerCccd: temporaryData.ownerCccd || ""
+  };
+
+  try {
+    // Render file theo chuẩn EJS Engine
+    const renderedHtml = ejs.render(template, templateData);
+    
+    // Set content type và trả về HTML Output
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(renderedHtml);
+  } catch (error) {
+    return errorResponse(res, `EJS Render Error: ${error.message}`, 500);
+  }
+});

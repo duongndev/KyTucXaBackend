@@ -1,6 +1,10 @@
 import express from 'express';
 import * as registrationCtrl from '../controllers/registration.controller.js';
 import { protect, authorize } from '../middlewares/auth.middlewares.js';
+import {
+  uploadImageMiddleware,
+  handleUploadError
+} from '../middlewares/cloudinaryUpload.middleware.js';
 
 const router = express.Router();
 
@@ -14,7 +18,16 @@ router.post('/', registrationCtrl.createRegistrationForm);
 router.patch('/:id/step1', registrationCtrl.saveStep1);
 router.patch('/:id/step2', registrationCtrl.saveStep2);
 
-// Document upload
+// Document upload — sensitive (CCCD / thẻ SV): multipart/form-data, field "image"
+// Backend tự upload lên Cloudinary authenticated, Frontend KHÔNG trực tiếp upload lên Cloudinary
+router.post(
+  '/:id/documents/sensitive',
+  uploadImageMiddleware,
+  handleUploadError,
+  registrationCtrl.uploadSensitiveDocumentHandler
+);
+
+// Document upload — thông thường (stamped_form, priority_proof): gửi fileUrl JSON
 router.post('/:id/documents', registrationCtrl.uploadDocument);
 
 // Submit form
@@ -34,6 +47,10 @@ router.get('/my-current', registrationCtrl.getRegistrationFormCurrent);
 
 // Claim form (link offline form to user account)
 router.post('/claim-form', registrationCtrl.claimRegistrationForm);
+
+// Preview forms
+router.get('/preview-residence/:id', registrationCtrl.previewResidenceFormHTML);
+router.get('/preview-temporary/:id', registrationCtrl.previewTemporaryFormHTML);
 
 // Get single form by ID
 router.get('/:id', registrationCtrl.getRegistrationFormById);
