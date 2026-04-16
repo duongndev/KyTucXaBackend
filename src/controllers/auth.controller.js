@@ -1,6 +1,6 @@
-import User from '../models/user/user.model.js';
-import Student from '../models//user/student.model.js';
-import mongoose from 'mongoose';
+import User from "../models/user/user.model.js";
+import Student from "../models//user/student.model.js";
+import mongoose from "mongoose";
 import {
   hashPassword,
   comparePassword,
@@ -8,6 +8,7 @@ import {
   generateAccessToken,
   generateRefreshToken,
   generateOTP,
+  generateSecureToken,
 } from "../utils/utility.function.js";
 import { logSecurityEvent } from "../utils/security.logger.js";
 import {
@@ -32,11 +33,11 @@ import expressAsyncHandler from "express-async-handler";
 export const register = expressAsyncHandler(async (req, res) => {
   try {
     const {
-      fullName, 
-      email, 
-      password, 
-      confirmPassword, 
-      role = 'student' 
+      fullName,
+      email,
+      password,
+      confirmPassword,
+      role = "student",
     } = req.body;
 
     // Validate input
@@ -56,7 +57,10 @@ export const register = expressAsyncHandler(async (req, res) => {
     }
 
     // Validate password confirmation
-    const confirmPasswordValidation = validateConfirmPassword(password, confirmPassword);
+    const confirmPasswordValidation = validateConfirmPassword(
+      password,
+      confirmPassword,
+    );
     if (!confirmPasswordValidation.valid) {
       return badRequestResponse(res, confirmPasswordValidation.message);
     }
@@ -77,12 +81,12 @@ export const register = expressAsyncHandler(async (req, res) => {
       email,
       password,
       role,
-      status: role === 'admin' ? 'active' : 'inactive', // Student status is inactive by default
-      isEmailVerified: role === 'admin', // Admin emails are pre-verified
-      emailVerificationOTP: role === 'student' ? otp : null,
-      emailVerificationOTPExpires: role === 'student' ? otpExpires : null,
-      lastOTPRequestAt: role === 'student' ? now : null,
-      otpRequestCount: role === 'student' ? 1 : 0
+      status: role === "admin" ? "active" : "inactive", // Student status is inactive by default
+      isEmailVerified: role === "admin", // Admin emails are pre-verified
+      emailVerificationOTP: role === "student" ? otp : null,
+      emailVerificationOTPExpires: role === "student" ? otpExpires : null,
+      lastOTPRequestAt: role === "student" ? now : null,
+      otpRequestCount: role === "student" ? 1 : 0,
     });
 
     await user.save();
@@ -93,10 +97,10 @@ export const register = expressAsyncHandler(async (req, res) => {
       email: user.email,
       role: user.role,
       ip: req.ip,
-      userAgent: req.get("User-Agent")
+      userAgent: req.get("User-Agent"),
     });
 
-    if (role === 'student') {
+    if (role === "student") {
       // Send OTP email for verification
       try {
         await sendRegistrationOTPEmail(email, fullName, otp);
@@ -108,7 +112,7 @@ export const register = expressAsyncHandler(async (req, res) => {
           email: user.email,
           error: emailError.message,
           ip: req.ip,
-          userAgent: req.get("User-Agent")
+          userAgent: req.get("User-Agent"),
         });
       }
     }
@@ -123,20 +127,20 @@ export const register = expressAsyncHandler(async (req, res) => {
         isEmailVerified: user.isEmailVerified,
         isAccountVerified: user.isAccountVerified,
         lastLoginAt: user.lastLoginAt,
-        createdAt: user.createdAt
+        createdAt: user.createdAt,
       },
-      message: role === 'student' 
-        ? "Tài khoản đã được tạo. Vui lòng kiểm tra email để xác thực OTP. Mã OTP có hiệu lực trong 2 phút."
-        : "Tài khoản admin đã được tạo. Bạn có thể đăng nhập ngay.",
+      message:
+        role === "student"
+          ? "Tài khoản đã được tạo. Vui lòng kiểm tra email để xác thực OTP. Mã OTP có hiệu lực trong 2 phút."
+          : "Tài khoản admin đã được tạo. Bạn có thể đăng nhập ngay.",
     });
-
   } catch (error) {
     console.error("Register error:", error);
     await logSecurityEvent("REGISTRATION_FAILED", {
       email: req.body.email,
       error: error.message,
       ip: req.ip,
-      userAgent: req.get("User-Agent")
+      userAgent: req.get("User-Agent"),
     });
     errorResponse(res, "Đăng ký thất bại", error.message);
   }
@@ -164,7 +168,7 @@ export const login = expressAsyncHandler(async (req, res) => {
         email,
         reason: "User not found",
         ip: req.ip,
-        userAgent: req.get("User-Agent")
+        userAgent: req.get("User-Agent"),
       });
       return unauthorizedResponse(res, "Email hoặc mật khẩu không chính xác");
     }
@@ -177,60 +181,76 @@ export const login = expressAsyncHandler(async (req, res) => {
         email,
         reason: "Invalid password",
         ip: req.ip,
-        userAgent: req.get("User-Agent")
+        userAgent: req.get("User-Agent"),
       });
       return unauthorizedResponse(res, "Email hoặc mật khẩu không chính xác");
     }
 
     // Check if user is email verified (only for non-admin users)
-    if (user.role !== 'admin' && !user.isEmailVerified) {
+    if (user.role !== "admin" && !user.isEmailVerified) {
       await logSecurityEvent("LOGIN_FAILED", {
         userId: user._id,
         email,
         reason: "Email not verified",
         ip: req.ip,
-        userAgent: req.get("User-Agent")
+        userAgent: req.get("User-Agent"),
       });
-      return forbiddenResponse(res, "Tài khoản của bạn chưa được xác thực. Vui lòng kiểm tra email và xác thực tài khoản trước khi đăng nhập.", {
-        isEmailVerified: false
-      });
+      return forbiddenResponse(
+        res,
+        "Tài khoản của bạn chưa được xác thực. Vui lòng kiểm tra email và xác thực tài khoản trước khi đăng nhập.",
+        {
+          isEmailVerified: false,
+        },
+      );
     }
-   
-    // Generate tokens
-    const accessToken = await generateAccessToken(user);
-    const refreshToken = await generateRefreshToken(user);
 
-    // Update refresh token
+    // Generate new session ID to invalidate old sessions (single device login)
+    const sessionId = generateSecureToken(32);
+
+    // Generate tokens with session ID
+    const accessToken = await generateAccessToken(user, sessionId);
+    const refreshToken = await generateRefreshToken(user, sessionId);
+
+    // Update user with new session and refresh token
     user.refreshToken = refreshToken;
+    user.currentSessionId = sessionId;
     user.lastLoginAt = new Date();
     await user.save();
 
     // Get student info and determine next action
     const student = await Student.findOne({ userId: user._id });
-    const studentInfo = student ? {
-      studentId: student.studentId,
-      university: student.university,
-      major: student.major,
-      class: student.class,
-      academicYear: student.academicYear,
-      status: student.status,
-      ktxStatus: student.ktxStatus
-    } : null;
+    const studentInfo = student
+      ? {
+          studentId: student.studentId,
+          university: student.university,
+          major: student.major,
+          class: student.class,
+          academicYear: student.academicYear,
+          status: student.status,
+          ktxStatus: student.ktxStatus,
+        }
+      : null;
 
     // Determine next action based on profile status
     let responseMessage = "Đăng nhập thành công";
     let nextAction = null;
     let requiresProfileUpdate = false;
 
-    if (!student) {
+    // Admin users skip student profile checks
+    if (user.role === "admin") {
+      nextAction = "ADMIN_DASHBOARD_ACCESS";
+      responseMessage = "Đăng nhập thành công. Chào mừng Admin!";
+    } else if (!student) {
       nextAction = "CREATE_STUDENT_PROFILE";
-      responseMessage = "Đăng nhập thành công. Vui lòng hoàn tất hồ sơ sinh viên.";
+      responseMessage =
+        "Đăng nhập thành công. Vui lòng hoàn tất hồ sơ sinh viên.";
       requiresProfileUpdate = true;
     } else if (!user.isAccountVerified) {
       nextAction = "COMPLETE_STUDENT_PROFILE";
-      responseMessage = "Đăng nhập thành công. Vui lòng hoàn tất thông tin hồ sơ.";
+      responseMessage =
+        "Đăng nhập thành công. Vui lòng hoàn tất thông tin hồ sơ.";
       requiresProfileUpdate = true;
-    } else if (user.status === 'inactive') {
+    } else if (user.status === "inactive") {
       nextAction = "ACCOUNT_INACTIVE";
       responseMessage = "Đăng nhập thành công. Tài khoản đang chờ kích hoạt.";
     } else {
@@ -238,20 +258,25 @@ export const login = expressAsyncHandler(async (req, res) => {
       responseMessage = "Đăng nhập thành công. Chào mừng bạn trở lại!";
     }
 
-    // Log successful login
+    // Log successful login with session info
     await logSecurityEvent("LOGIN_SUCCESS", {
       userId: user._id,
       email,
       role: user.role,
+      sessionId,
       ip: req.ip,
       userAgent: req.get("User-Agent"),
-      nextAction: nextAction
+      nextAction: nextAction,
     });
 
     successResponse(res, responseMessage, {
       tokens: {
         accessToken,
-        refreshToken
+        refreshToken,
+      },
+      session: {
+        sessionId,
+        isNewSession: true,
       },
       user: {
         _id: user._id,
@@ -265,7 +290,7 @@ export const login = expressAsyncHandler(async (req, res) => {
         isEmailVerified: user.isEmailVerified,
         isAccountVerified: user.isAccountVerified,
         lastLoginAt: user.lastLoginAt,
-        createdAt: user.createdAt
+        createdAt: user.createdAt,
       },
       student: studentInfo,
       // nextAction,
@@ -273,14 +298,13 @@ export const login = expressAsyncHandler(async (req, res) => {
       // accountStatus: user.status,
       // canAccessRegistration: user.status === 'active' && student && user.isAccountVerified
     });
-
   } catch (error) {
     console.error("Login error:", error);
     await logSecurityEvent("LOGIN_FAILED", {
       email: req.body.email,
       error: error.message,
       ip: req.ip,
-      userAgent: req.get("User-Agent")
+      userAgent: req.get("User-Agent"),
     });
     errorResponse(res, "Đăng nhập thất bại", error.message);
   }
@@ -291,14 +315,17 @@ export const logout = expressAsyncHandler(async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Clear refresh token
-    const user = await User.findByIdAndUpdate(userId, { refreshToken: "" });
+    // Clear refresh token and session ID
+    const user = await User.findByIdAndUpdate(userId, { 
+      refreshToken: "",
+      currentSessionId: null
+    });
 
     // Log logout event
     await logSecurityEvent("LOGOUT_SUCCESS", {
       userId,
       ip: req.ip,
-      userAgent: req.get("User-Agent")
+      userAgent: req.get("User-Agent"),
     });
 
     successResponse(res, "Đăng xuất thành công", {
@@ -306,10 +333,9 @@ export const logout = expressAsyncHandler(async (req, res) => {
         _id: user._id,
         fullName: user.fullName,
         email: user.email,
-        role: user.role
-      }
+        role: user.role,
+      },
     });
-
   } catch (error) {
     console.error("Logout error:", error);
     errorResponse(res, "Đăng xuất thất bại", error.message);
@@ -332,7 +358,7 @@ export const refreshToken = expressAsyncHandler(async (req, res) => {
     } catch (error) {
       return unauthorizedResponse(res, "Refresh token không hợp lệ");
     }
-    
+
     if (!decoded) {
       return unauthorizedResponse(res, "Refresh token không hợp lệ");
     }
@@ -343,10 +369,15 @@ export const refreshToken = expressAsyncHandler(async (req, res) => {
       return unauthorizedResponse(res, "Refresh token không hợp lệ");
     }
 
+    // Check if session is still valid (single device login)
+    if (decoded.sessionId && user.currentSessionId && decoded.sessionId !== user.currentSessionId) {
+      return unauthorizedResponse(res, "Phiên đăng nhập không hợp lệ. Tài khoản đã được đăng nhập trên thiết bị khác.");
+    }
 
-    // Generate new tokens
-    const newAccessToken = await generateAccessToken(user);
-    const newRefreshToken = await generateRefreshToken(user);
+    // Generate new tokens with same session ID
+    const sessionId = decoded.sessionId || user.currentSessionId;
+    const newAccessToken = await generateAccessToken(user, sessionId);
+    const newRefreshToken = await generateRefreshToken(user, sessionId);
 
     // Update refresh token
     user.refreshToken = newRefreshToken;
@@ -354,23 +385,22 @@ export const refreshToken = expressAsyncHandler(async (req, res) => {
 
     successResponse(res, "Làm mới token thành công", {
       accessToken: newAccessToken,
-      refreshToken: newRefreshToken
+      refreshToken: newRefreshToken,
     });
-
   } catch (error) {
     console.error("Refresh token error:", error);
     errorResponse(res, "Làm mới token thất bại", error.message);
   }
 });
 
-// get current user 
+// get current user
 export const getCurrentUser = expressAsyncHandler(async (req, res) => {
   try {
     // Check if user is authenticated
     if (!req.user || !req.user.id) {
-      return unauthorizedResponse(res, 'Token không hợp lệ');
+      return unauthorizedResponse(res, "Token không hợp lệ");
     }
-    
+
     const userId = req.user.id;
 
     // Find user
@@ -382,35 +412,45 @@ export const getCurrentUser = expressAsyncHandler(async (req, res) => {
 
     // Get student info if applicable
     const student = await Student.findOne({ userId: user._id });
-    const studentInfo = student ? {
-      studentId: student.studentId,
-      university: student.university,
-      major: student.major,
-      className: student.className,
-      academicYear: student.academicYear,
-      status: student.studentStatus,
-      ktxStatus: student.ktxStatus
-    } : null;
+    const studentInfo = student
+      ? {
+          studentId: student.studentId,
+          university: student.university,
+          major: student.major,
+          className: student.className,
+          academicYear: student.academicYear,
+          status: student.studentStatus,
+          ktxStatus: student.ktxStatus,
+        }
+      : null;
 
     // Determine profile status and next steps theo luồng mới
-    let profileStatus = 'NOT_STARTED';
+    let profileStatus = "NOT_STARTED";
     let nextSteps = [];
     let completionPercentage = 0;
-    let statusMessage = '';
+    let statusMessage = "";
     let canProceedToNext = false;
 
-    // Kiểm tra từng bước trong luồng mới
-    if (!user.isEmailVerified) {
-      profileStatus = 'EMAIL_NOT_VERIFIED';
-      nextSteps = ['verifyEmail'];
+    // Admin users skip student profile checks
+    if (user.role === "admin") {
+      profileStatus = "COMPLETE";
+      nextSteps = ["accessAdminDashboard"];
+      completionPercentage = 100;
+      statusMessage = "Tài khoản Admin đã sẵn sàng sử dụng.";
+      canProceedToNext = true;
+    } else if (!user.isEmailVerified) {
+      profileStatus = "EMAIL_NOT_VERIFIED";
+      nextSteps = ["verifyEmail"];
       completionPercentage = 0;
-      statusMessage = 'Tài khoản chưa xác thực email. Vui lòng kiểm tra email và xác thực OTP.';
+      statusMessage =
+        "Tài khoản chưa xác thực email. Vui lòng kiểm tra email và xác thực OTP.";
       canProceedToNext = false;
     } else if (!student) {
-      profileStatus = 'NOT_STARTED';
-      nextSteps = ['createStudentProfile'];
+      profileStatus = "NOT_STARTED";
+      nextSteps = ["createStudentProfile"];
       completionPercentage = 25;
-      statusMessage = 'Email đã xác thực. Vui lòng hoàn tất thông tin sinh viên.';
+      statusMessage =
+        "Email đã xác thực. Vui lòng hoàn tất thông tin sinh viên.";
       canProceedToNext = true;
     } else {
       // Kiểm tra các trường bắt buộc của profile
@@ -419,78 +459,98 @@ export const getCurrentUser = expressAsyncHandler(async (req, res) => {
         phoneNumber: !!user.phoneNumber,
         dateOfBirth: !!user.dateOfBirth,
         gender: !!user.gender,
-        identityCard: !!user.identityCard
+        identityCard: !!user.identityCard,
       };
-      
+
       const requiredStudentFields = {
         studentId: !!student.studentId,
         university: !!student.university,
         major: !!student.major,
-        className: !!student.className
+        className: !!student.className,
       };
 
-      const allUserFieldsComplete = Object.values(requiredUserFields).every(Boolean);
-      const allStudentFieldsComplete = Object.values(requiredStudentFields).every(Boolean);
-      const allFieldsComplete = allUserFieldsComplete && allStudentFieldsComplete;
+      const allUserFieldsComplete =
+        Object.values(requiredUserFields).every(Boolean);
+      const allStudentFieldsComplete = Object.values(
+        requiredStudentFields,
+      ).every(Boolean);
+      const allFieldsComplete =
+        allUserFieldsComplete && allStudentFieldsComplete;
 
       if (!allFieldsComplete) {
-        profileStatus = 'INCOMPLETE';
-        nextSteps = ['completeStudentProfile'];
+        profileStatus = "INCOMPLETE";
+        nextSteps = ["completeStudentProfile"];
         completionPercentage = 50;
-        
+
         // Xác định các trường còn thiếu
         const missingFields = [];
-        if (!requiredUserFields.fullName) missingFields.push('họ tên');
-        if (!requiredUserFields.phoneNumber) missingFields.push('số điện thoại');
-        if (!requiredUserFields.dateOfBirth) missingFields.push('ngày sinh');
-        if (!requiredUserFields.gender) missingFields.push('giới tính');
-        if (!requiredUserFields.identityCard) missingFields.push('số căn cước công dân');
-        if (!requiredStudentFields.studentId) missingFields.push('mã số sinh viên');
-        if (!requiredStudentFields.university) missingFields.push('cơ sở đào tạo');
-        if (!requiredStudentFields.major) missingFields.push('khoa');
-        if (!requiredStudentFields.class) missingFields.push('lớp');
-        
-        statusMessage = `Thông tin cá nhân chưa hoàn tất. Vui lòng bổ sung: ${missingFields.join(', ')}.`;
+        if (!requiredUserFields.fullName) missingFields.push("họ tên");
+        if (!requiredUserFields.phoneNumber)
+          missingFields.push("số điện thoại");
+        if (!requiredUserFields.dateOfBirth) missingFields.push("ngày sinh");
+        if (!requiredUserFields.gender) missingFields.push("giới tính");
+        if (!requiredUserFields.identityCard)
+          missingFields.push("số căn cước công dân");
+        if (!requiredStudentFields.studentId)
+          missingFields.push("mã số sinh viên");
+        if (!requiredStudentFields.university)
+          missingFields.push("cơ sở đào tạo");
+        if (!requiredStudentFields.major) missingFields.push("khoa");
+        if (!requiredStudentFields.class) missingFields.push("lớp");
+
+        statusMessage = `Thông tin cá nhân chưa hoàn tất. Vui lòng bổ sung: ${missingFields.join(", ")}.`;
         canProceedToNext = true;
       } else if (!user.isAccountVerified) {
-        profileStatus = 'PENDING_VERIFICATION';
-        nextSteps = ['waitForAccountVerification'];
+        profileStatus = "PENDING_VERIFICATION";
+        nextSteps = ["waitForAccountVerification"];
         completionPercentage = 75;
-        statusMessage = 'Thông tin cá nhân đã hoàn tất. Tài khoản đang chờ kích hoạt.';
+        statusMessage =
+          "Thông tin cá nhân đã hoàn tất. Tài khoản đang chờ kích hoạt.";
         canProceedToNext = false;
-      } else if (user.status === 'inactive') {
-        profileStatus = 'INACTIVE';
-        nextSteps = ['waitForAdminActivation'];
+      } else if (user.status === "inactive") {
+        profileStatus = "INACTIVE";
+        nextSteps = ["waitForAdminActivation"];
         completionPercentage = 75;
-        statusMessage = 'Hồ sơ đã hoàn tất. Tài khoản đang chờ quản trị viên kích hoạt.';
+        statusMessage =
+          "Hồ sơ đã hoàn tất. Tài khoản đang chờ quản trị viên kích hoạt.";
         canProceedToNext = false;
       } else {
-        profileStatus = 'COMPLETE';
-        nextSteps = ['accessDashboard', 'startRegistration'];
+        profileStatus = "COMPLETE";
+        nextSteps = ["accessDashboard", "startRegistration"];
         completionPercentage = 100;
-        statusMessage = 'Hồ sơ đã hoàn tất. Tài khoản đã sẵn sàng sử dụng.';
+        statusMessage = "Hồ sơ đã hoàn tất. Tài khoản đã sẵn sàng sử dụng.";
         canProceedToNext = true;
       }
     }
 
     // Xác định các quyền truy cập
+    const isAdmin = user.role === "admin";
     const accessPermissions = {
-      canAccessDashboard: user.isEmailVerified,
+      canAccessDashboard: user.isEmailVerified || isAdmin,
       canEditProfile: true,
-      canAccessRegistration: user.status === 'active' && student && user.isAccountVerified,
-      canViewRegistrationStatus: !!student,
-      canStartNewRegistration: user.status === 'active' && user.isAccountVerified,
-      canManageAccount: true
+      canAccessRegistration: isAdmin ||
+        (user.status === "active" && student && user.isAccountVerified),
+      canViewRegistrationStatus: isAdmin || !!student,
+      canStartNewRegistration: isAdmin ||
+        (user.status === "active" && user.isAccountVerified),
+      canManageAccount: true,
+      canAccessAdminDashboard: isAdmin,
     };
 
     // Xác định trạng thái account
     const accountState = {
-      hasStudentProfile: !!student,
+      hasStudentProfile: isAdmin || !!student,
       isEmailVerified: user.isEmailVerified,
-      isProfileComplete: user.isAccountVerified,
-      isAccountActive: user.status === 'active',
-      isRegistrationEligible: user.status === 'active' && user.isAccountVerified,
-      needsAttention: !user.isEmailVerified || !user.isAccountVerified || user.status !== 'active'
+      isProfileComplete: isAdmin || user.isAccountVerified,
+      isAccountActive: isAdmin || user.status === "active",
+      isRegistrationEligible: isAdmin ||
+        (user.status === "active" && user.isAccountVerified),
+      needsAttention: !isAdmin && (
+        !user.isEmailVerified ||
+        !user.isAccountVerified ||
+        user.status !== "active"
+      ),
+      isAdmin: isAdmin,
     };
 
     // Return user info without sensitive data
@@ -508,8 +568,15 @@ export const getCurrentUser = expressAsyncHandler(async (req, res) => {
       isAccountVerified: user.isAccountVerified,
       lastLoginAt: user.lastLoginAt,
       createdAt: user.createdAt,
-      updatedAt: user.updatedAt
+      updatedAt: user.updatedAt,
     };
+
+    // Admin chỉ trả về user data, không cần các phần khác
+    if (isAdmin) {
+      return successResponse(res, "Lấy thông tin admin thành công", {
+        user: userResponse,
+      });
+    }
 
     successResponse(res, "Lấy thông tin người dùng thành công", {
       user: userResponse,
@@ -519,7 +586,7 @@ export const getCurrentUser = expressAsyncHandler(async (req, res) => {
         completionPercentage,
         statusMessage,
         nextSteps,
-        canProceedToNext
+        canProceedToNext,
       },
       permissions: accessPermissions,
       accountState,
@@ -527,27 +594,38 @@ export const getCurrentUser = expressAsyncHandler(async (req, res) => {
         currentStep: profileStatus,
         totalSteps: 4,
         completedSteps: Math.floor(completionPercentage / 25),
-        remainingSteps: 4 - Math.floor(completionPercentage / 25)
+        remainingSteps: 4 - Math.floor(completionPercentage / 25),
       },
       statusInfo: {
-        currentStatus: profileStatus === 'COMPLETE' ? (user.status === 'active' ? 'ACTIVE' : 'PENDING_ACTIVATION') : 'INCOMPLETE_PROFILE',
-        description: profileStatus === 'COMPLETE' ? 
-          (user.status === 'active' ? "Tài khoản đã được kích hoạt và sẵn sàng sử dụng" : "Hồ sơ đã hoàn chỉnh, đang chờ quản trị viên kích hoạt") :
-          "Hồ sơ chưa hoàn chỉnh, cần bổ sung thông tin",
-        missingFields: profileStatus === 'INCOMPLETE' ? 
-          Object.entries({
-            "Họ tên": !!user.fullName,
-            "Số điện thoại": !!user.phoneNumber,
-            "Ngày sinh": !!user.dateOfBirth,
-            "Giới tính": !!user.gender,
-            "CCCD": !!user.identityCard,
-            "Mã SV": studentInfo ? !!studentInfo.studentId : false,
-            "Cơ sở đào tạo": studentInfo ? !!studentInfo.university : false,
-            "Lớp": studentInfo ? !!studentInfo.className : false
-          }).filter(([_, complete]) => !complete).map(([name]) => name) : []
-      }
+        currentStatus:
+          profileStatus === "COMPLETE"
+            ? user.status === "active"
+              ? "ACTIVE"
+              : "PENDING_ACTIVATION"
+            : "INCOMPLETE_PROFILE",
+        description:
+          profileStatus === "COMPLETE"
+            ? user.status === "active"
+              ? "Tài khoản đã được kích hoạt và sẵn sàng sử dụng"
+              : "Hồ sơ đã hoàn chỉnh, đang chờ quản trị viên kích hoạt"
+            : "Hồ sơ chưa hoàn chỉnh, cần bổ sung thông tin",
+        missingFields:
+          profileStatus === "INCOMPLETE"
+            ? Object.entries({
+                "Họ tên": !!user.fullName,
+                "Số điện thoại": !!user.phoneNumber,
+                "Ngày sinh": !!user.dateOfBirth,
+                "Giới tính": !!user.gender,
+                CCCD: !!user.identityCard,
+                "Mã SV": studentInfo ? !!studentInfo.studentId : false,
+                "Cơ sở đào tạo": studentInfo ? !!studentInfo.university : false,
+                Lớp: studentInfo ? !!studentInfo.className : false,
+              })
+                .filter(([_, complete]) => !complete)
+                .map(([name]) => name)
+            : [],
+      },
     });
-
   } catch (error) {
     console.error("Get current user error:", error);
     errorResponse(res, "Lấy thông tin người dùng thất bại", error.message);
@@ -606,13 +684,24 @@ export const updateProfile = expressAsyncHandler(async (req, res) => {
       if (isNaN(birthDate.getTime())) {
         return badRequestResponse(res, "Ngày sinh không hợp lệ");
       }
-      
+
       const now = new Date();
-      const minDate = new Date(now.getFullYear() - 100, now.getMonth(), now.getDate());
-      const maxDate = new Date(now.getFullYear() - 16, now.getMonth(), now.getDate());
-      
+      const minDate = new Date(
+        now.getFullYear() - 100,
+        now.getMonth(),
+        now.getDate(),
+      );
+      const maxDate = new Date(
+        now.getFullYear() - 16,
+        now.getMonth(),
+        now.getDate(),
+      );
+
       if (birthDate < minDate || birthDate > maxDate) {
-        return badRequestResponse(res, "Ngày sinh phải trong khoảng 16 đến 100 tuổi");
+        return badRequestResponse(
+          res,
+          "Ngày sinh phải trong khoảng 16 đến 100 tuổi",
+        );
       }
       user.dateOfBirth = birthDate;
     }
@@ -620,7 +709,10 @@ export const updateProfile = expressAsyncHandler(async (req, res) => {
     if (gender != null) {
       const normalizedGender = String(gender).toLowerCase().trim();
       if (!["male", "female", "other"].includes(normalizedGender)) {
-        return badRequestResponse(res, "Giới tính phải là 'male', 'female' hoặc 'other'");
+        return badRequestResponse(
+          res,
+          "Giới tính phải là 'male', 'female' hoặc 'other'",
+        );
       }
       user.gender = normalizedGender;
     }
@@ -638,12 +730,15 @@ export const updateProfile = expressAsyncHandler(async (req, res) => {
         // }
 
         // Kiểm tra trùng lặp với user khác
-        const existingUser = await User.findOne({ 
-          identityCard: trimmedCCCD, 
-          _id: { $ne: userId } 
+        const existingUser = await User.findOne({
+          identityCard: trimmedCCCD,
+          _id: { $ne: userId },
         });
         if (existingUser) {
-          return badRequestResponse(res, "Số CCCD đã được sử dụng bởi tài khoản khác");
+          return badRequestResponse(
+            res,
+            "Số CCCD đã được sử dụng bởi tài khoản khác",
+          );
         }
 
         user.identityCard = trimmedCCCD;
@@ -654,18 +749,18 @@ export const updateProfile = expressAsyncHandler(async (req, res) => {
     let student = null;
     if (user.role === "student") {
       student = await Student.findOne({ userId: user._id });
-      
+
       // Create student profile if not exists
       if (!student) {
         student = await Student.create({
           userId: user._id,
           studentId: `STU${new Date().getFullYear()}${Math.random().toString(36).substring(2, 8).toUpperCase()}`,
-          university: "",
+          university: university || "",
           major: "",
           className: "",
           academicYear: "",
           studentStatus: "studying",
-          ktxStatus: "not_registered"
+          ktxStatus: "not_registered",
         });
       }
 
@@ -678,20 +773,29 @@ export const updateProfile = expressAsyncHandler(async (req, res) => {
           // Validate format mã số sinh viên (chữ và số, không chứa ký tự đặc biệt)
           const studentIdPattern = /^[a-zA-Z0-9]+$/;
           if (!studentIdPattern.test(trimmedStudentId)) {
-            return badRequestResponse(res, "Mã số sinh viên chỉ được chứa chữ cái và số, không chứa ký tự đặc biệt hoặc khoảng trắng");
+            return badRequestResponse(
+              res,
+              "Mã số sinh viên chỉ được chứa chữ cái và số, không chứa ký tự đặc biệt hoặc khoảng trắng",
+            );
           }
-          
+
           if (trimmedStudentId.length < 5 || trimmedStudentId.length > 20) {
-            return badRequestResponse(res, "Mã số sinh viên phải từ 5 đến 20 ký tự");
+            return badRequestResponse(
+              res,
+              "Mã số sinh viên phải từ 5 đến 20 ký tự",
+            );
           }
 
           // Kiểm tra trùng lặp với sinh viên khác
-          const existingStudent = await Student.findOne({ 
-            studentId: trimmedStudentId.toUpperCase(), 
-            userId: { $ne: userId } 
+          const existingStudent = await Student.findOne({
+            studentId: trimmedStudentId.toUpperCase(),
+            userId: { $ne: userId },
           });
           if (existingStudent) {
-            return badRequestResponse(res, "Mã số sinh viên đã được sử dụng bởi sinh viên khác");
+            return badRequestResponse(
+              res,
+              "Mã số sinh viên đã được sử dụng bởi sinh viên khác",
+            );
           }
 
           student.studentId = trimmedStudentId.toUpperCase();
@@ -705,7 +809,10 @@ export const updateProfile = expressAsyncHandler(async (req, res) => {
           return badRequestResponse(res, "Cơ sở đào tạo không được để trống");
         }
         if (trimmedUniversity.length < 3 || trimmedUniversity.length > 200) {
-          return badRequestResponse(res, "Cơ sở đào tạo phải từ 3 đến 200 ký tự");
+          return badRequestResponse(
+            res,
+            "Cơ sở đào tạo phải từ 3 đến 200 ký tự",
+          );
         }
         student.university = trimmedUniversity;
       }
@@ -743,9 +850,12 @@ export const updateProfile = expressAsyncHandler(async (req, res) => {
           // Validate format: 2023-2024 hoặc 2023
           const yearPattern = /^(\d{4})(-\d{4})?$/;
           if (!yearPattern.test(trimmedYear)) {
-            return badRequestResponse(res, "Năm học phải có định dạng '2023' hoặc '2023-2024'");
+            return badRequestResponse(
+              res,
+              "Năm học phải có định dạng '2023' hoặc '2023-2024'",
+            );
           }
-          
+
           const startYear = parseInt(trimmedYear.substring(0, 4));
           const currentYear = new Date().getFullYear();
           if (startYear < 2000 || startYear > currentYear + 1) {
@@ -766,7 +876,7 @@ export const updateProfile = expressAsyncHandler(async (req, res) => {
       if (student) {
         await student.save({ session });
       }
-      
+
       await session.commitTransaction();
     } catch (error) {
       await session.abortTransaction();
@@ -789,10 +899,10 @@ export const updateProfile = expressAsyncHandler(async (req, res) => {
         university: !!university,
         major: !!major,
         className: !!className,
-        academicYear: !!academicYear
+        academicYear: !!academicYear,
       },
       ip: req.ip,
-      userAgent: req.get("User-Agent")
+      userAgent: req.get("User-Agent"),
     });
 
     // Lấy thông tin student đã cập nhật
@@ -810,13 +920,13 @@ export const updateProfile = expressAsyncHandler(async (req, res) => {
       : null;
 
     // Kiểm tra profile completeness
-    const isProfileComplete = 
-      user.fullName && 
-      user.phoneNumber && 
-      user.dateOfBirth && 
-      user.gender && 
+    const isProfileComplete =
+      user.fullName &&
+      user.phoneNumber &&
+      user.dateOfBirth &&
+      user.gender &&
       user.identityCard &&
-      updatedStudent && 
+      updatedStudent &&
       updatedStudent.university &&
       updatedStudent.className &&
       updatedStudent.major &&
@@ -827,14 +937,16 @@ export const updateProfile = expressAsyncHandler(async (req, res) => {
     let nextAction = "PROFILE_UPDATED";
     let message = "Cập nhật thông tin cá nhân thành công";
     let accountStatus = "INCOMPLETE_PROFILE";
-    
-    if (user.isAccountVerified && user.status === 'active') {
+
+    if (user.isAccountVerified && user.status === "active") {
       nextAction = "DASHBOARD_ACCESS";
-      message = "Thông tin cá nhân đã cập nhật. Tài khoản đã được kích hoạt. Bạn có thể bắt đầu sử dụng dịch vụ.";
+      message =
+        "Thông tin cá nhân đã cập nhật. Tài khoản đã được kích hoạt. Bạn có thể bắt đầu sử dụng dịch vụ.";
       accountStatus = "ACTIVE";
     } else if (isProfileComplete) {
       nextAction = "WAITING_ACTIVATION";
-      message = "Thông tin cá nhân đã hoàn tất. Vui lòng hoàn tất hồ sơ đăng ký ký xá để kích hoạt tài khoản.";
+      message =
+        "Thông tin cá nhân đã hoàn tất. Vui lòng hoàn tất hồ sơ đăng ký ký xá để kích hoạt tài khoản.";
       accountStatus = "PENDING_ACTIVATION";
     } else {
       nextAction = "COMPLETE_PROFILE";
@@ -855,14 +967,15 @@ export const updateProfile = expressAsyncHandler(async (req, res) => {
         status: user.status,
         isEmailVerified: user.isEmailVerified,
         isAccountVerified: user.isAccountVerified,
-        updatedAt: user.updatedAt
+        updatedAt: user.updatedAt,
       },
       student: studentInfo,
       nextAction,
       accountStatus,
       profileComplete: user.isAccountVerified,
-      accountActive: user.status === 'active',
-      canAccessRegistration: user.status === 'active' && studentInfo && user.isAccountVerified,
+      accountActive: user.status === "active",
+      canAccessRegistration:
+        user.status === "active" && studentInfo && user.isAccountVerified,
       validation: {
         requiredFields: {
           fullName: !!user.fullName,
@@ -874,27 +987,34 @@ export const updateProfile = expressAsyncHandler(async (req, res) => {
           university: studentInfo ? !!studentInfo.university : false,
           major: studentInfo ? !!studentInfo.major : false,
           className: studentInfo ? !!studentInfo.className : false,
-          academicYear: studentInfo ? !!studentInfo.academicYear : false
+          academicYear: studentInfo ? !!studentInfo.academicYear : false,
         },
-        isComplete: isProfileComplete
+        isComplete: isProfileComplete,
       },
       statusInfo: {
         currentStatus: accountStatus,
-        description: accountStatus === "ACTIVE" ? "Tài khoản đã được kích hoạt và sẵn sàng sử dụng" :
-                   accountStatus === "PENDING_ACTIVATION" ? "Thông tin cá nhân đã hoàn chỉnh, vui lòng nộp hồ sơ đăng ký ký túc xá để kích hoạt tài khoản" :
-                   "Thông tin cá nhân chưa hoàn chỉnh, cần bổ sung thông tin",
-        missingFields: accountStatus === "INCOMPLETE_PROFILE" ? 
-          Object.entries({
-            "Họ tên": !!user.fullName,
-            "Số điện thoại": !!user.phoneNumber,
-            "Ngày sinh": !!user.dateOfBirth,
-            "Giới tính": !!user.gender,
-            "CCCD": !!user.identityCard,
-            "Mã SV": studentInfo ? !!studentInfo.studentId : false,
-            "Cơ sở đào tạo": studentInfo ? !!studentInfo.university : false,
-            "Lớp": studentInfo ? !!studentInfo.className : false
-          }).filter(([_, complete]) => !complete).map(([name]) => name) : []
-      }
+        description:
+          accountStatus === "ACTIVE"
+            ? "Tài khoản đã được kích hoạt và sẵn sàng sử dụng"
+            : accountStatus === "PENDING_ACTIVATION"
+              ? "Thông tin cá nhân đã hoàn chỉnh, vui lòng nộp hồ sơ đăng ký ký túc xá để kích hoạt tài khoản"
+              : "Thông tin cá nhân chưa hoàn chỉnh, cần bổ sung thông tin",
+        missingFields:
+          accountStatus === "INCOMPLETE_PROFILE"
+            ? Object.entries({
+                "Họ tên": !!user.fullName,
+                "Số điện thoại": !!user.phoneNumber,
+                "Ngày sinh": !!user.dateOfBirth,
+                "Giới tính": !!user.gender,
+                CCCD: !!user.identityCard,
+                "Mã SV": studentInfo ? !!studentInfo.studentId : false,
+                "Cơ sở đào tạo": studentInfo ? !!studentInfo.university : false,
+                Lớp: studentInfo ? !!studentInfo.className : false,
+              })
+                .filter(([_, complete]) => !complete)
+                .map(([name]) => name)
+            : [],
+      },
     });
   } catch (error) {
     console.error("Update profile error:", error);
@@ -902,12 +1022,11 @@ export const updateProfile = expressAsyncHandler(async (req, res) => {
       userId: req.user?.id,
       error: error.message,
       ip: req.ip,
-      userAgent: req.get("User-Agent")
+      userAgent: req.get("User-Agent"),
     });
     errorResponse(res, "Cập nhật thông tin cá nhân thất bại", error.message);
   }
 });
-
 
 // Verify email OTP
 export const verifyEmailOTP = expressAsyncHandler(async (req, res) => {
@@ -937,7 +1056,10 @@ export const verifyEmailOTP = expressAsyncHandler(async (req, res) => {
 
     // Check if OTP exists and is valid
     if (!user.emailVerificationOTP || !user.emailVerificationOTPExpires) {
-      return badRequestResponse(res, "Không có mã OTP nào được gửi cho tài khoản này");
+      return badRequestResponse(
+        res,
+        "Không có mã OTP nào được gửi cho tài khoản này",
+      );
     }
 
     // Verify OTP
@@ -947,17 +1069,21 @@ export const verifyEmailOTP = expressAsyncHandler(async (req, res) => {
         email: user.email,
         reason: "Invalid OTP",
         ip: req.ip,
-        userAgent: req.get("User-Agent")
+        userAgent: req.get("User-Agent"),
       });
       return badRequestResponse(res, "Mã OTP không chính xác");
     }
-    
+
     // Check if OTP has expired
     if (Date.now() > user.emailVerificationOTPExpires) {
-      return badRequestResponse(res, "Mã OTP đã hết hạn. Vui lòng yêu cầu OTP mới.", {
-        otpExpired: true,
-        canRequestNewOTP: true
-      });
+      return badRequestResponse(
+        res,
+        "Mã OTP đã hết hạn. Vui lòng yêu cầu OTP mới.",
+        {
+          otpExpired: true,
+          canRequestNewOTP: true,
+        },
+      );
     }
 
     // Clear OTP and mark email as verified
@@ -971,11 +1097,10 @@ export const verifyEmailOTP = expressAsyncHandler(async (req, res) => {
       userId: user._id,
       email: user.email,
       ip: req.ip,
-      userAgent: req.get("User-Agent")
+      userAgent: req.get("User-Agent"),
     });
 
     successResponse(res, "Tài khoản đã được xác thực thành công.");
-
   } catch (error) {
     console.error("Verify OTP error:", error);
     // Log security event for failed verification
@@ -983,7 +1108,7 @@ export const verifyEmailOTP = expressAsyncHandler(async (req, res) => {
       email: req.body.email,
       error: error.message,
       ip: req.ip,
-      userAgent: req.get("User-Agent")
+      userAgent: req.get("User-Agent"),
     });
     errorResponse(res, "Xác thực OTP thất bại", error.message);
   }
@@ -1012,48 +1137,67 @@ export const resendOTP = expressAsyncHandler(async (req, res) => {
 
     // Check if user is already verified
     if (user.isEmailVerified) {
-      return badRequestResponse(res, "Email đã được xác thực. Không cần gửi lại OTP.");
+      return badRequestResponse(
+        res,
+        "Email đã được xác thực. Không cần gửi lại OTP.",
+      );
     }
 
     // Rate limiting: Check if user can request new OTP (2 minutes cooldown)
     const now = new Date();
     const twoMinutesAgo = new Date(now.getTime() - 2 * 60 * 1000);
-    
+
     // Check if there was a recent OTP request
     if (user.lastOTPRequestAt && user.lastOTPRequestAt > twoMinutesAgo) {
-      const timeUntilNextRequest = Math.ceil((user.lastOTPRequestAt.getTime() + 2 * 60 * 1000 - now.getTime()) / 1000);
+      const timeUntilNextRequest = Math.ceil(
+        (user.lastOTPRequestAt.getTime() + 2 * 60 * 1000 - now.getTime()) /
+          1000,
+      );
       const minutes = Math.floor(timeUntilNextRequest / 60);
       const seconds = timeUntilNextRequest % 60;
-      
+
       await logSecurityEvent("OTP_RATE_LIMITED", {
         userId: user._id,
         email: user.email,
         timeUntilNextRequest,
         ip: req.ip,
-        userAgent: req.get("User-Agent")
+        userAgent: req.get("User-Agent"),
       });
-      
-      return badRequestResponse(res, `Vui lòng đợi ${minutes} phút ${seconds} giây trước khi yêu cầu OTP mới`, {
-        canResendAt: new Date(user.lastOTPRequestAt.getTime() + 2 * 60 * 1000),
-        waitTimeSeconds: timeUntilNextRequest
-      });
+
+      return badRequestResponse(
+        res,
+        `Vui lòng đợi ${minutes} phút ${seconds} giây trước khi yêu cầu OTP mới`,
+        {
+          canResendAt: new Date(
+            user.lastOTPRequestAt.getTime() + 2 * 60 * 1000,
+          ),
+          waitTimeSeconds: timeUntilNextRequest,
+        },
+      );
     }
 
     // Check if there's an existing OTP that's still valid
-    const existingOTPValid = user.emailVerificationOTP && 
-                           user.emailVerificationOTPExpires && 
-                           now < user.emailVerificationOTPExpires;
+    const existingOTPValid =
+      user.emailVerificationOTP &&
+      user.emailVerificationOTPExpires &&
+      now < user.emailVerificationOTPExpires;
 
     if (existingOTPValid) {
-      const timeUntilExpiry = Math.ceil((user.emailVerificationOTPExpires.getTime() - now.getTime()) / 1000);
+      const timeUntilExpiry = Math.ceil(
+        (user.emailVerificationOTPExpires.getTime() - now.getTime()) / 1000,
+      );
       const minutes = Math.floor(timeUntilExpiry / 60);
       const seconds = timeUntilExpiry % 60;
-      
-      return badRequestResponse(res, `OTP hiện tại vẫn còn hiệu lực trong ${minutes} phút ${seconds} giây. Vui lòng kiểm tra email hoặc đợi hết hạn.`, {
-        currentOTPExpiresAt: user.emailVerificationOTPExpires,
-        timeUntilExpirySeconds: timeUntilExpiry,
-        canResendAt: user.emailVerificationOTPExpires
-      });
+
+      return badRequestResponse(
+        res,
+        `OTP hiện tại vẫn còn hiệu lực trong ${minutes} phút ${seconds} giây. Vui lòng kiểm tra email hoặc đợi hết hạn.`,
+        {
+          currentOTPExpiresAt: user.emailVerificationOTPExpires,
+          timeUntilExpirySeconds: timeUntilExpiry,
+          canResendAt: user.emailVerificationOTPExpires,
+        },
+      );
     }
 
     // Generate new OTP
@@ -1072,19 +1216,23 @@ export const resendOTP = expressAsyncHandler(async (req, res) => {
       await sendRegistrationOTPEmail(email, user.fullName, otp);
     } catch (emailError) {
       console.error("Failed to resend OTP email:", emailError);
-      
+
       // Reset OTP request time on email failure to allow retry
       user.lastOTPRequestAt = null;
       await user.save();
-      
+
       await logSecurityEvent("OTP_RESEND_FAILED", {
         userId: user._id,
         email: user.email,
         error: emailError.message,
         ip: req.ip,
-        userAgent: req.get("User-Agent")
+        userAgent: req.get("User-Agent"),
       });
-      return errorResponse(res, "Gửi lại OTP thất bại. Vui lòng thử lại sau.", emailError.message);
+      return errorResponse(
+        res,
+        "Gửi lại OTP thất bại. Vui lòng thử lại sau.",
+        emailError.message,
+      );
     }
 
     // Log successful resend
@@ -1093,25 +1241,72 @@ export const resendOTP = expressAsyncHandler(async (req, res) => {
       email: user.email,
       otpRequestCount: user.otpRequestCount,
       ip: req.ip,
-      userAgent: req.get("User-Agent")
+      userAgent: req.get("User-Agent"),
     });
 
     successResponse(res, "Gửi lại OTP thành công", {
-      message: "Mã OTP mới đã được gửi đến email của bạn. Mã OTP có hiệu lực trong 2 phút.",
+      message:
+        "Mã OTP mới đã được gửi đến email của bạn. Mã OTP có hiệu lực trong 2 phút.",
       otpExpiresIn: 120, // seconds
       canResendAt: new Date(now.getTime() + 2 * 60 * 1000),
       nextResendWaitTime: 120, // seconds
-      requestCount: user.otpRequestCount
+      requestCount: user.otpRequestCount,
     });
-
   } catch (error) {
     console.error("Resend OTP error:", error);
     await logSecurityEvent("OTP_RESEND_FAILED", {
       email: req.body.email,
       error: error.message,
       ip: req.ip,
-      userAgent: req.get("User-Agent")
+      userAgent: req.get("User-Agent"),
     });
     errorResponse(res, "Gửi lại OTP thất bại", error.message);
+  }
+});
+
+export const updateFCMToken = expressAsyncHandler(async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+    const userId = req.user._id;
+
+    if (!fcmToken) {
+      return badRequestResponse(res, "Vui lòng nhập FCM token");
+    }
+
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { fcmToken },
+      { new: true },
+    ).select("-password");
+
+    if (!user) {
+      return unauthorizedResponse(res, "Người dùng không tồn tại");
+    }
+
+    await logSecurityEvent("FCM_TOKEN_UPDATED", {
+      userId: user._id,
+      email: user.email,
+      ip: req.ip,
+      userAgent: req.get("User-Agent"),
+    });
+
+    return successResponse(res, "Cập nhật FCM token thành công", {
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        role: user.role,
+        fcmToken: user.fcmToken,
+      },
+    });
+  } catch (error) {
+    console.error("Update FCM token error:", error);
+    await logSecurityEvent("FCM_TOKEN_UPDATE_FAILED", {
+      userId: req.user?.id,
+      error: error.message,
+      ip: req.ip,
+      userAgent: req.get("User-Agent"),
+    });
+    errorResponse(res, "Cập nhật FCM token thất bại", error.message);
   }
 });

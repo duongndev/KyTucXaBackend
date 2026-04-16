@@ -8,6 +8,11 @@ import {
 
 const router = express.Router();
 
+
+// Preview forms
+router.get('/preview-residence/:id', registrationCtrl.previewResidenceFormHTML);
+router.get('/preview-temporary/:id', registrationCtrl.previewTemporaryFormHTML);
+
 // Student routes (protected)
 router.use(protect);
 
@@ -42,15 +47,13 @@ router.get('/:id/status', registrationCtrl.getRegistrationStatus);
 // Get user's forms
 router.get('/my-forms', registrationCtrl.getRegistrationForms);
 
-// Get current draft form (for continuing registration)
+// Get current registration state (draft OR active) - gộp 2 API trong 1
 router.get('/my-current', registrationCtrl.getRegistrationFormCurrent);
 
 // Claim form (link offline form to user account)
 router.post('/claim-form', registrationCtrl.claimRegistrationForm);
 
-// Preview forms
-router.get('/preview-residence/:id', registrationCtrl.previewResidenceFormHTML);
-router.get('/preview-temporary/:id', registrationCtrl.previewTemporaryFormHTML);
+
 
 // Get single form by ID
 router.get('/:id', registrationCtrl.getRegistrationFormById);

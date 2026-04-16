@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "create-admin": "node script/create-admin.js"
+    "create-admin": "node script/create-admin.js",
+    "seed": "node script/seed-data.js"
   },
   "keywords": [],
   "author": "duongnd",

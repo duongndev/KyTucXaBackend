@@ -989,24 +989,180 @@ export const getRegistrationFormById = expressAsyncHandler(async (req, res) => {
   });
 });
 
-// ============ GET CURRENT DRAFT FORM ============
+// ============ GET CURRENT REGISTRATION STATE (DRAFT + ACTIVE) ============
+// Gộp cả draft và active form để frontend chỉ cần gọi 1 API
 
 export const getRegistrationFormCurrent = expressAsyncHandler(async (req, res) => {
   const currentUserId = req.user._id;
 
-  // Tìm form draft mới nhất của user hiện tại
-  const registrationForm = await RegistrationForm.findOne({
+  // 1. Tìm draft form (ưu tiên cao nhất - đang điền)
+  const draftForm = await RegistrationForm.findOne({
     userId: currentUserId,
     status: "draft"
   })
     .sort({ createdAt: -1 })
     .populate("userId", "fullName email studentCode phone address");
 
-  // Nếu không có draft, trả về null
+  // Nếu có draft → trả về ngay (ưu tiên tiếp tục điền)
+  if (draftForm) {
+    const [documents, missingDocuments] = await Promise.all([
+      RegistrationDocument.find({ registrationForm: draftForm._id }).sort({ createdAt: -1 }),
+      RegistrationMissingDocument.find({ registrationForm: draftForm._id }).sort({ createdAt: -1 })
+    ]);
+
+    const completedStepsCount = draftForm.completedSteps.length;
+    const progressPercent = Math.round((completedStepsCount / 4) * 100);
+
+    return successResponse(res, "Draft form found - continue registration", {
+      hasRegistration: true,
+      type: "draft",
+      progressPercent,
+      draft: {
+        ...draftForm.toObject(),
+        documents,
+        missingDocuments
+      },
+      active: null
+    });
+  }
+
+  // 2. Không có draft → tìm active form (đã submit đang xử lý)
+  const activeStatuses = [
+    "submitted", "pending", "missing_document", "resubmitted",
+    "pending_offline", "received_offline", "processing"
+  ];
+
+  const activeForm = await RegistrationForm.findOne({
+    userId: currentUserId,
+    status: { $in: activeStatuses }
+  })
+    .sort({ submittedAt: -1, createdAt: -1 })
+    .populate("userId", "fullName email studentCode phone address");
+
+  // Nếu có active form → trả về thông tin tracking
+  if (activeForm) {
+    const [documents, missingDocuments] = await Promise.all([
+      RegistrationDocument.find({ registrationForm: activeForm._id }).sort({ createdAt: -1 }),
+      RegistrationMissingDocument.find({
+        registrationForm: activeForm._id,
+        isResolved: false
+      }).sort({ createdAt: -1 })
+    ]);
+
+    // Tính stamped form status
+    let stampedFormStatus = null;
+    if (!activeForm.requiredDocuments.stampedForm && activeForm.stampedFormDeadline) {
+      const daysRemaining = Math.ceil(
+        (activeForm.stampedFormDeadline - Date.now()) / (1000 * 60 * 60 * 24)
+      );
+      stampedFormStatus = {
+        uploaded: false,
+        deadline: activeForm.stampedFormDeadline,
+        daysRemaining: daysRemaining > 0 ? daysRemaining : 0,
+        isOverdue: daysRemaining < 0
+      };
+    } else if (activeForm.requiredDocuments.stampedForm) {
+      stampedFormStatus = { uploaded: true };
+    }
+
+    // Pending actions
+    const pendingActions = [];
+    if (activeForm.status === "missing_document") {
+      pendingActions.push(`Bổ sung tài liệu: ${missingDocuments.map(m => m.documentType).join(", ")}`);
+    } else if (["submitted", "pending", "resubmitted"].includes(activeForm.status)) {
+      if (!activeForm.requiredDocuments.stampedForm && stampedFormStatus?.isOverdue) {
+        pendingActions.push("QUÁ HẠN: Upload đơn có dấu xác nhận");
+      } else if (!activeForm.requiredDocuments.stampedForm) {
+        pendingActions.push(`Upload đơn có dấu xác nhận (còn ${stampedFormStatus?.daysRemaining} ngày)`);
+      }
+      pendingActions.push("Chờ admin duyệt hồ sơ");
+    } else if (activeForm.status === "processing") {
+      pendingActions.push("Hồ sơ đang được xử lý");
+    } else if (activeForm.status === "pending_offline") {
+      pendingActions.push("Vui lòng in và nộp đơn tại văn phòng KTX");
+    } else if (activeForm.status === "received_offline") {
+      pendingActions.push("Đơn đã được tiếp nhận, đang chờ nhập liệu");
+    }
+
+    // Progress steps
+    const progressSteps = {
+      submitted: 25, pending: 50, missing_document: 40, resubmitted: 60,
+      pending_offline: 20, received_offline: 30, processing: 75
+    };
+
+    // Tạo signed URL cho signature (có thể null nếu không có)
+    const signatureUrl = activeForm.signature ? getSignedSignatureUrl(activeForm.signature) : null;
+
+    return successResponse(res, "Active submission found - tracking mode", {
+      hasRegistration: true,
+      type: "active",
+      progressPercent: progressSteps[activeForm.status] || 0,
+      draft: null,
+      active: {
+        ...activeForm.toObject(),
+        signature: undefined,  // Ẩn publicId
+        documents: documents.map(d => ({
+          ...d.toObject(),
+          publicId: undefined,
+          signedUrl: d.publicId ? getSignedDocumentUrl(d.publicId) : d.fileUrl
+        })),
+        missingDocuments,
+        signatureUrl  // Thêm signed URL để frontend hiển thị
+      },
+      tracking: {
+        formCode: activeForm.registrationFormCode,
+        status: activeForm.status,
+        statusDisplay: getStatusDisplay(activeForm.status),
+        submittedAt: activeForm.submittedAt,
+        progressPercent: progressSteps[activeForm.status] || 0,
+        stampedFormStatus,
+        pendingActions,
+        canUploadStampedForm: ["submitted", "pending", "missing_document"].includes(activeForm.status) &&
+          !activeForm.requiredDocuments.stampedForm &&
+          !stampedFormStatus?.isOverdue
+      }
+    });
+  }
+
+  // 3. Không có gì cả → cho phép tạo mới
+  return successResponse(res, "No registration found - create new", {
+    hasRegistration: false,
+    type: null,
+    progressPercent: 0,
+    draft: null,
+    active: null
+  });
+});
+
+// ============ GET ACTIVE SUBMITTED FORM ============
+// Lấy đơn đã submit đang xử lý (khác với draft) để user theo dõi trạng thái
+
+export const getActiveRegistrationForm = expressAsyncHandler(async (req, res) => {
+  const currentUserId = req.user._id;
+
+  // Các status của đơn đã submit đang xử lý (không bao gồm draft và rejected)
+  const activeStatuses = [
+    "submitted",
+    "pending",
+    "missing_document",
+    "resubmitted",
+    "pending_offline",
+    "received_offline",
+    "processing"
+  ];
+
+  // Tìm form active mới nhất của user
+  const registrationForm = await RegistrationForm.findOne({
+    userId: currentUserId,
+    status: { $in: activeStatuses }
+  })
+    .sort({ submittedAt: -1, createdAt: -1 })
+    .populate("userId", "fullName email studentCode phone address");
+
+  // Nếu không có form active
   if (!registrationForm) {
-    return successResponse(res, "No active draft form found", {
-      hasDraft: false,
-      progressPercent: 0,
+    return successResponse(res, "No active submission found", {
+      hasActiveForm: false,
       registrationForm: null
     });
   }
@@ -1014,23 +1170,101 @@ export const getRegistrationFormCurrent = expressAsyncHandler(async (req, res) =
   // Lấy documents và missing documents
   const [documents, missingDocuments] = await Promise.all([
     RegistrationDocument.find({ registrationForm: registrationForm._id }).sort({ createdAt: -1 }),
-    RegistrationMissingDocument.find({ registrationForm: registrationForm._id }).sort({ createdAt: -1 })
+    RegistrationMissingDocument.find({
+      registrationForm: registrationForm._id,
+      isResolved: false
+    }).sort({ createdAt: -1 })
   ]);
 
-  // Tính % hoàn thành
-  const completedStepsCount = registrationForm.completedSteps.length;
-  const progressPercent = Math.round((completedStepsCount / 4) * 100);
+  // Xác định trạng thái stamped form
+  let stampedFormStatus = null;
+  if (!registrationForm.requiredDocuments.stampedForm && registrationForm.stampedFormDeadline) {
+    const daysRemaining = Math.ceil(
+      (registrationForm.stampedFormDeadline - Date.now()) / (1000 * 60 * 60 * 24)
+    );
+    stampedFormStatus = {
+      uploaded: false,
+      deadline: registrationForm.stampedFormDeadline,
+      daysRemaining: daysRemaining > 0 ? daysRemaining : 0,
+      isOverdue: daysRemaining < 0
+    };
+  } else if (registrationForm.requiredDocuments.stampedForm) {
+    stampedFormStatus = { uploaded: true };
+  }
 
-  successResponse(res, "Current draft form retrieved successfully", {
-    hasDraft: true,
-    progressPercent,
+  // Xác định các hành động cần thực hiện
+  const pendingActions = [];
+  if (registrationForm.status === "missing_document") {
+    pendingActions.push(`Bổ sung tài liệu: ${missingDocuments.map(m => m.documentType).join(", ")}`);
+  } else if (["submitted", "pending", "resubmitted"].includes(registrationForm.status)) {
+    if (!registrationForm.requiredDocuments.stampedForm && stampedFormStatus?.isOverdue) {
+      pendingActions.push("QUÁ HẠN: Upload đơn có dấu xác nhận");
+    } else if (!registrationForm.requiredDocuments.stampedForm) {
+      pendingActions.push(`Upload đơn có dấu xác nhận (còn ${stampedFormStatus?.daysRemaining} ngày)`);
+    }
+    pendingActions.push("Chờ admin duyệt hồ sơ");
+  } else if (registrationForm.status === "processing") {
+    pendingActions.push("Hồ sơ đang được xử lý");
+  } else if (registrationForm.status === "pending_offline") {
+    pendingActions.push("Vui lòng in và nộp đơn tại văn phòng KTX");
+  } else if (registrationForm.status === "received_offline") {
+    pendingActions.push("Đơn đã được tiếp nhận, đang chờ nhập liệu");
+  }
+
+  // Tính toán tiến độ xử lý
+  const progressSteps = {
+    submitted: 25,
+    pending: 50,
+    missing_document: 40,
+    resubmitted: 60,
+    pending_offline: 20,
+    received_offline: 30,
+    processing: 75,
+    approved: 100,
+    rejected: 0
+  };
+
+  successResponse(res, "Active submission retrieved successfully", {
+    hasActiveForm: true,
     registrationForm: {
       ...registrationForm.toObject(),
-      documents,
+      documents: documents.map(d => ({
+        ...d.toObject(),
+        publicId: undefined,
+        signedUrl: d.publicId ? getSignedDocumentUrl(d.publicId) : d.fileUrl
+      })),
       missingDocuments
+    },
+    tracking: {
+      formCode: registrationForm.registrationFormCode,
+      status: registrationForm.status,
+      statusDisplay: getStatusDisplay(registrationForm.status),
+      submittedAt: registrationForm.submittedAt,
+      progressPercent: progressSteps[registrationForm.status] || 0,
+      stampedFormStatus,
+      pendingActions,
+      canUploadStampedForm: ["submitted", "pending", "missing_document"].includes(registrationForm.status) &&
+        !registrationForm.requiredDocuments.stampedForm &&
+        !stampedFormStatus?.isOverdue
     }
   });
 });
+
+// Helper function để hiển thị status
+function getStatusDisplay(status) {
+  const statusMap = {
+    submitted: "Đã nộp",
+    pending: "Đang chờ xử lý",
+    missing_document: "Thiếu tài liệu",
+    resubmitted: "Đã bổ sung tài liệu",
+    pending_offline: "Chờ nộp giấy",
+    received_offline: "Đã nhận giấy",
+    processing: "Đang xử lý",
+    approved: "Đã duyệt",
+    rejected: "Bị từ chối"
+  };
+  return statusMap[status] || status;
+}
 
 // ============ ADMIN: SAVE STEP 1 & 2 FOR OFFLINE FORM ============
 // Cho phép admin nhập dữ liệu từ đơn giấy vào hệ thống
