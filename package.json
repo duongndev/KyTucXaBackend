@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "create-admin": "node script/create-admin.js"
+    "create-admin": "node script/create-admin.js",
+    "seed": "node script/seed-data.js"
   },
   "keywords": [],
   "author": "duongnd",
@@ -23,6 +24,7 @@
     "cors": "^2.8.5",
     "dompurify": "^3.2.7",
     "dotenv": "^16.4.5",
+    "ejs": "^5.0.2",
     "express": "^4.21.1",
     "express-async-handler": "^1.2.0",
     "express-formidable": "^1.2.0",

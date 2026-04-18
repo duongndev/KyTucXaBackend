@@ -1,9 +1,8 @@
 import admin from "../config/firebase.admin.config.js";
-import Notification from "../models/notification.model.js";
-import NotificationPreference from "../models/notificationPreference.model.js";
-import User from "../models/user.model.js";
-import Student from "../models/student.model.js";
-import Registration from "../models/registration.model.js";
+import Notification from "../models/notification/notification.model.js";
+import NotificationPreference from "../models/notification/notificationPreference.model.js";
+import User from "../models/user/user.model.js";
+import Student from "../models/user/student.model.js";
 
 /**
  * Helper function to send FCM messages in batches
@@ -74,15 +73,16 @@ export const sendToUsers = async (userIds, notificationData) => {
       });
     }
 
-    // Lưu thông báo vào database
+    // Lưu thông báo vào database và lấy kết quả có _id
+    let savedNotifications = [];
     if (notifications.length > 0) {
-      await Notification.insertMany(notifications);
+      savedNotifications = await Notification.insertMany(notifications);
     }
 
     // Gửi FCM
     await _sendFCMBatch(fcmTokens, notificationData);
 
-    return notifications;
+    return savedNotifications;
   } catch (error) {
     throw new Error(`Lỗi khi gửi thông báo đến danh sách người dùng: ${error.message}`);
   }
@@ -93,37 +93,11 @@ export const sendToUsers = async (userIds, notificationData) => {
  */
 export const sendToAllUsers = async (notificationData) => {
   try {
-    const users = await User.find({ role: "user" }).select("_id");
+    const users = await User.find({ role: "student" }).select("_id");
     const userIds = users.map((u) => u._id);
     return await sendToUsers(userIds, notificationData);
   } catch (error) {
     throw new Error(`Lỗi khi gửi thông báo đến tất cả người dùng: ${error.message}`);
-  }
-};
-
-/**
- * Gửi thông báo đến tất cả nhân viên
- */
-export const sendToAllEmployees = async (notificationData) => {
-  try {
-    const employees = await User.find({ role: "employee" }).select("_id");
-    const employeeIds = employees.map((e) => e._id);
-    return await sendToUsers(employeeIds, notificationData);
-  } catch (error) {
-    throw new Error(`Lỗi khi gửi thông báo đến tất cả nhân viên: ${error.message}`);
-  }
-};
-
-/**
- * Gửi thông báo đến quản lý
- */
-export const sendToManagers = async (notificationData) => {
-  try {
-    const managers = await User.find({ role: "manager" }).select("_id");
-    const managerIds = managers.map((m) => m._id);
-    return await sendToUsers(managerIds, notificationData);
-  } catch (error) {
-    throw new Error(`Lỗi khi gửi thông báo đến quản lý: ${error.message}`);
   }
 };
 
@@ -142,9 +116,42 @@ export const sendToAdmin = async (notificationData) => {
 
 /**
  * Gửi thông báo đến một người dùng cụ thể
+ * @param {string} userId - ID người nhận
+ * @param {Object} notificationData - Dữ liệu thông báo {title, content, type, category, priority, data}
+ * @returns {Promise<Array>} - Danh sách notification đã lưu
  */
 export const sendToUser = async (userId, notificationData) => {
-  return await sendToUsers([userId], notificationData);
+  try {
+    // Kiểm tra userId hợp lệ
+    if (!userId) {
+      throw new Error("userId là bắt buộc");
+    }
+
+    // Kiểm tra notificationData
+    if (!notificationData || typeof notificationData !== "object") {
+      throw new Error("notificationData phải là object");
+    }
+
+    // Kiểm tra các trường bắt buộc
+    if (!notificationData.title || !notificationData.content) {
+      throw new Error("title và content là bắt buộc");
+    }
+
+    // Kiểm tra user tồn tại
+    const user = await User.findById(userId);
+    if (!user) {
+      console.warn(`[sendToUser] Không tìm thấy user với ID: ${userId}`);
+      return []; // Trả về mảng rỗng thay vì throw lỗi
+    }
+
+    // Gửi thông báo
+    const result = await sendToUsers([userId], notificationData);
+    return result;
+  } catch (error) {
+    console.error(`[sendToUser] Lỗi gửi thông báo đến ${userId}:`, error.message);
+    // Trả về mảng rỗng thay vì throw để không làm gián đoạn flow chính
+    return [];
+  }
 };
 
 /**
@@ -311,26 +318,8 @@ export const removeFCMToken = async (userId, fcmToken) => {
   }
 };
 
-// Default export for backward compatibility
-const notificationService = {
-  sendToUsers,
-  sendToAllUsers,
-  sendToAllEmployees,
-  sendToManagers,
-  sendToAdmin,
-  sendToUser,
-  sendToBoth,
-  getUserNotifications,
-  markAsRead,
-  markAllAsRead,
-  getUnreadCount,
-  updateFCMToken,
-  removeFCMToken,
-  registrationNotifications
-};
-
 // Registration notification templates
-export const registrationNotifications = {
+const registrationNotifications = {
   // New registration submitted
   newRegistration: async (registration) => {
     const student = await Student.findById(registration.student).populate('userId');
@@ -438,6 +427,22 @@ export const registrationNotifications = {
       }
     });
   }
+};
+
+// Default export for backward compatibility
+const notificationService = {
+  sendToUsers,
+  sendToAllUsers,
+  sendToAdmin,
+  sendToUser,
+  sendToBoth,
+  getUserNotifications,
+  markAsRead,
+  markAllAsRead,
+  getUnreadCount,
+  updateFCMToken,
+  removeFCMToken,
+  registrationNotifications
 };
 
 export default notificationService;

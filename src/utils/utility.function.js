@@ -2,30 +2,32 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 
 // Tạo access token
-const generateAccessToken = async (user) => {
+const generateAccessToken = async (user, sessionId) => {
   return await jwt.sign(
     { 
       id: user._id, 
       role: user.role, 
       email: user.email,
+      sessionId: sessionId || user.currentSessionId,
       type: 'access'
     },
     process.env.JWT_ACCESS_SECRET,
     {
-      expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "1d",
+      expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "15m",
     }
   );
 };
 
 // Tạo refresh token
-const generateRefreshToken = async (user) => {
+const generateRefreshToken = async (user, sessionId) => {
   if (!process.env.JWT_REFRESH_SECRET) {
     throw new Error('JWT_REFRESH_SECRET environment variable is required');
   }
   
   return await jwt.sign(
     { 
-      id: user._id, 
+      id: user._id,
+      sessionId: sessionId || user.currentSessionId,
       type: 'refresh'
     },
     process.env.JWT_REFRESH_SECRET,

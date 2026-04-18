@@ -9,6 +9,10 @@ export default {
   transformIgnorePatterns: [
     'node_modules/(?!(mongodb-memory-server)/)'
   ],
+  moduleNameMapper: {
+    '^../services/email.service.js$': '<rootDir>/tests/__mocks__/email.service.js',
+    '^../../services/email.service.js$': '<rootDir>/tests/__mocks__/email.service.js'
+  },
   globals: {
     'ts-jest': {
       useESM: true

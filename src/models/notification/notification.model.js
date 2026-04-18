@@ -43,8 +43,8 @@ const NotificationSchema = new mongoose.Schema({
     priority: {
         type: String,
         required: true,
-        enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'],
-        default: 'MEDIUM'
+        enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT', 'NORMAL'],
+        default: 'NORMAL'
     },
     relatedResource: {
         resourceType: {

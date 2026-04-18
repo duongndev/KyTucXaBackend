@@ -14,6 +14,7 @@ router.post('/resend-otp', authCtrl.resendOTP);
 router.use(protect);
 router.get('/me', authCtrl.getCurrentUser);
 router.patch('/update-profile', userRateLimit(10, 60 * 1000), authCtrl.updateProfile); // 10 requests per minute
+router.put('/update-fcm-token', authCtrl.updateFCMToken);
 router.post('/logout', logout, authCtrl.logout);
 
 export default router;

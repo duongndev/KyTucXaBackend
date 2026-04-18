@@ -27,6 +27,11 @@ const protect = async (req, res, next) => {
         return errorResponse(res, "Người dùng không tồn tại", 401);
       }
       
+      // Kiểm tra sessionId có khớp với session hiện tại không (đảm bảo đăng nhập 1 thiết bị)
+      if (decoded.sessionId && user.currentSessionId && decoded.sessionId !== user.currentSessionId) {
+        return errorResponse(res, "Phiên đăng nhập không hợp lệ. Tài khoản đã được đăng nhập trên thiết bị khác.", 401);
+      }
+      
       // Kiểm tra user có bị khóa không (không áp dụng cho admin)
       const isTemporarilyLocked = !!(user.lockUntil && user.lockUntil > Date.now());
       const isPermanentlyBlocked = user.isBlocked === true;
@@ -87,7 +92,13 @@ const refreshToken = async (req, res, next) => {
       return errorResponse(res, "Refresh token không hợp lệ", 401);
     }
     
+    // Kiểm tra sessionId có khớp với session hiện tại không
+    if (decoded.sessionId && user.currentSessionId && decoded.sessionId !== user.currentSessionId) {
+      return errorResponse(res, "Phiên đăng nhập không hợp lệ. Tài khoản đã được đăng nhập trên thiết bị khác.", 401);
+    }
+    
     req.user = user;
+    req.sessionId = decoded.sessionId;
     next();
   } catch (error) {
     return errorResponse(res, "Refresh token không hợp lệ hoặc đã hết hạn", 401);
