@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
+import { Readable } from "stream";
 import cloudinary from "../config/cloudinary.config.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -242,7 +243,7 @@ export const uploadMultiple = async (files, userId) => {
 /**
  * Upload chữ ký dạng Base64 lên Cloudinary dưới dạng ẩn (authenticated).
  *
- * @param {string} base64Data Chuỗi base64 của chữ ký
+ * @param {string} base64Data Chuỗi base64 của chữ ký (có thể là Data URL hoặc base64 thuần)
  * @param {string} userId ID của user
  * @returns {Promise<UploadResult>}
  */
@@ -250,15 +251,37 @@ export const uploadSignatureBase64 = async (base64Data, userId) => {
   const folder = buildFolder(userId, "signature");
   const publicId = `signature_${userId}_${Date.now()}`;
 
+  // Strip Data URL header nếu có (data:image/png;base64,...)
+  let pureBase64 = base64Data;
+  if (base64Data.startsWith("data:")) {
+    const commaIndex = base64Data.indexOf(",");
+    if (commaIndex !== -1) {
+      pureBase64 = base64Data.substring(commaIndex + 1);
+    }
+  }
+
+  // Chuyển base64 thành Buffer và tạo stream để upload
+  const buffer = Buffer.from(pureBase64, 'base64');
+  const stream = Readable.from(buffer);
+
   try {
-    const result = await cloudinary.v2.uploader.upload(base64Data, {
-      folder,
-      public_id: publicId,
-      resource_type: "image",
-      type: "authenticated",    // QUAN TRỌNG: Thiết lập ẩn
-      overwrite: true,
-      quality: "auto",
-      fetch_format: "auto",
+    const result = await new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.v2.uploader.upload_stream(
+        {
+          folder,
+          public_id: publicId,
+          resource_type: "image",
+          type: "authenticated",
+          overwrite: true,
+          quality: "auto",
+          fetch_format: "auto",
+        },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        }
+      );
+      stream.pipe(uploadStream);
     });
 
     return {
@@ -270,7 +293,9 @@ export const uploadSignatureBase64 = async (base64Data, userId) => {
       resourceType: "image",
     };
   } catch (error) {
-    throw new Error(`Upload chữ ký thất bại: ${error.message}`);
+    console.error("[uploadSignatureBase64] Error:", error);
+    const errorMsg = error?.message || error?.error?.message || JSON.stringify(error);
+    throw new Error(`Upload chữ ký thất bại: ${errorMsg}`);
   }
 };
 
@@ -300,7 +325,7 @@ export const getSignedSignatureUrl = (publicId, expiresInSeconds = 3600) => {
  * Danh sách loại giấy tờ cần ẩn (type=authenticated).
  * Các loại không nằm trong danh sách này vẫn upload public bình thường.
  */
-export const SENSITIVE_DOC_TYPES = ["cccd_front", "cccd_back", "student_card"];
+export const SENSITIVE_DOC_TYPES = ["cccd_front", "cccd_back", "student_card", "photo_3x4"];
 
 /**
  * Upload file giấy tờ nhạy cảm (CCCD, thẻ SV) lên Cloudinary

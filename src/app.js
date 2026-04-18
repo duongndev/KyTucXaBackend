@@ -71,10 +71,12 @@ app.use(logger("dev"));
 import authRoutes from './routes/auth.routes.js';
 import registrationRoutes from './routes/registration.routes.js';
 import uploadRoutes from './routes/upload.routes.js';
+import notificationRoutes from './routes/notification.routes.js';
 
 app.use('/api/auth', authRoutes);
 app.use('/api/registrations', registrationRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 
 

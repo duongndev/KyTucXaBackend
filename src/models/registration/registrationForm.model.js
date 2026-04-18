@@ -108,7 +108,8 @@ const registrationFormSchema = new mongoose.Schema({
     cccdBack: { type: Boolean, default: false },
     studentCard: { type: Boolean, default: false },
     priorityDoc: { type: Boolean, default: false },
-    stampedForm: { type: Boolean, default: false }
+    stampedForm: { type: Boolean, default: false },
+    photo3x4: { type: Boolean, default: false }
   },
 
   // Có thể submit mà không cần stampedForm ngay

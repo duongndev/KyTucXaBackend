@@ -8,6 +8,9 @@ import {
 
 const router = express.Router();
 
+// Get status & progress
+router.get('/:id/status', registrationCtrl.getRegistrationStatus);
+
 
 // Preview forms
 router.get('/preview-residence/:id', registrationCtrl.previewResidenceFormHTML);
@@ -42,7 +45,7 @@ router.post('/:id/submit', registrationCtrl.submitRegistrationForm);
 router.post('/:id/stamped-form', registrationCtrl.uploadStampedForm);
 
 // Get status & progress
-router.get('/:id/status', registrationCtrl.getRegistrationStatus);
+// router.get('/:id/status', registrationCtrl.getRegistrationStatus);
 
 // Get user's forms
 router.get('/my-forms', registrationCtrl.getRegistrationForms);
@@ -71,6 +74,21 @@ router.get('/', registrationCtrl.getRegistrationForms);
 router.patch('/:id/request-missing', registrationCtrl.requestMissingDocuments);
 router.patch('/:id/approve', registrationCtrl.approveRegistrationForm);
 router.patch('/:id/reject', registrationCtrl.rejectRegistrationForm);
+
+// Admin: Confirm single form (submitted → pending) - Step 1
+router.patch('/:id/confirm', registrationCtrl.adminConfirmSingleForm);
+
+// Admin: Dashboard stats
+router.get('/admin/stats', registrationCtrl.getAdminStats);
+
+// Admin: Batch confirm forms (submitted → pending) - Step 1
+router.post('/admin/confirm', registrationCtrl.adminConfirmForms);
+
+// Admin: Check overdue forms and auto-reject
+router.post('/admin/check-overdue', registrationCtrl.adminCheckOverdueForms);
+
+// Admin: Review documents and decide (approve | missing_document | reject) - Step 2
+router.post('/:id/review-documents', registrationCtrl.adminReviewDocuments);
 
 // Offline submission - mark as received (new flow: pending_offline -> received_offline)
 router.post('/:id/mark-received', registrationCtrl.markOfflineFormReceived);
