@@ -72,11 +72,19 @@ import authRoutes from './routes/auth.routes.js';
 import registrationRoutes from './routes/registration.routes.js';
 import uploadRoutes from './routes/upload.routes.js';
 import notificationRoutes from './routes/notification.routes.js';
+import buildingRoutes from './routes/building.routes.js';
+import roomRoutes from './routes/room.routes.js';
+import roomAssignmentRoutes from './routes/roomAssignment.routes.js';
+import studentRoutes from './routes/student.routes.js';
 
 app.use('/api/auth', authRoutes);
 app.use('/api/registrations', registrationRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/buildings', buildingRoutes);
+app.use('/api/rooms', roomRoutes);
+app.use('/api/room-assignments', roomAssignmentRoutes);
+app.use('/api/students', studentRoutes);
 
 
 
