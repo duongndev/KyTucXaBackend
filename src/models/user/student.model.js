@@ -13,8 +13,7 @@ const studentSchema = new mongoose.Schema({
     required: true,
     unique: true,
     trim: true,
-    uppercase: true,
-    index: true
+    uppercase: true
   },
 
   university: {
