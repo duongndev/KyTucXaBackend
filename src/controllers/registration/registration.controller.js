@@ -2,6 +2,7 @@ import RegistrationForm from "../../models/registration/registrationForm.model.j
 import RegistrationDocument from "../../models/registration/registrationDocument.model.js";
 import RegistrationMissingDocument from "../../models/registration/registrationMissingDocument.model.js";
 import User from "../../models/user/user.model.js";
+import Student from "../../models/user/student.model.js";
 import { generateRegistrationCode } from "../../utils/generateCode.js";
 import {
   successResponse,
@@ -198,7 +199,7 @@ export const saveStep1 = expressAsyncHandler(async (req, res) => {
     ...registrationForm.formData,
     residence: residenceData
   };
-  
+
   registrationForm.currentStep = 2;
   if (!registrationForm.completedSteps.includes(1)) {
     registrationForm.completedSteps.push(1);
@@ -244,7 +245,7 @@ export const saveStep2 = expressAsyncHandler(async (req, res) => {
     ...registrationForm.formData,
     temporary: temporaryConten
   };
-  
+
   registrationForm.currentStep = 3;
   if (!registrationForm.completedSteps.includes(2)) {
     registrationForm.completedSteps.push(2);
@@ -491,7 +492,7 @@ export const submitRegistrationForm = expressAsyncHandler(async (req, res) => {
 
   const allErrors = validateAllSteps(registrationForm.formData);
   if (allErrors.length > 0) {
-    return badRequestResponse(res, "Form incomplete", { 
+    return badRequestResponse(res, "Form incomplete", {
       errors: allErrors,
       message: "Vui lòng hoàn thành tất cả các bước trước khi nộp"
     });
@@ -527,7 +528,7 @@ export const submitRegistrationForm = expressAsyncHandler(async (req, res) => {
   try {
     const lockedForm = await RegistrationForm.findOneAndUpdate(
       { _id: id, status: "draft", isLocked: { $ne: true } },
-      { 
+      {
         isLocked: true,
         status: "submitted",
         submittedAt: new Date(),
@@ -566,7 +567,7 @@ export const submitRegistrationForm = expressAsyncHandler(async (req, res) => {
       },
       needStampedForm: !lockedForm.requiredDocuments.stampedForm,
       stampedFormDeadline: lockedForm.stampedFormDeadline,
-      message: lockedForm.requiredDocuments.stampedForm 
+      message: lockedForm.requiredDocuments.stampedForm
         ? "Hồ sơ đã được nộp thành công"
         : "Hồ sơ đã được nộp. Vui lòng upload đơn có dấu xác nhận trong vòng 7 ngày"
     });
@@ -700,7 +701,7 @@ export const getRegistrationStatus = expressAsyncHandler(async (req, res) => {
     formCode: registrationForm.registrationFormCode,
     overallStatus: registrationForm.status,
     currentStep: registrationForm.currentStep,
-    
+
     progress: {
       step1_residence: {
         completed: registrationForm.completedSteps.includes(1),
@@ -751,9 +752,9 @@ export const getRegistrationStatus = expressAsyncHandler(async (req, res) => {
     if (!canSubmitForm(registrationForm.requiredDocuments)) {
       statusDetail.pendingActions.push(`Upload tài liệu còn thiếu: ${getMissingDocs(registrationForm.requiredDocuments).join(", ")}`);
     }
-    if (registrationForm.completedSteps.includes(1) && 
-        registrationForm.completedSteps.includes(2) && 
-        canSubmitForm(registrationForm.requiredDocuments)) {
+    if (registrationForm.completedSteps.includes(1) &&
+      registrationForm.completedSteps.includes(2) &&
+      canSubmitForm(registrationForm.requiredDocuments)) {
       statusDetail.pendingActions.push("Nộp hồ sơ");
     }
   } else if (["submitted", "pending"].includes(registrationForm.status)) {
@@ -903,11 +904,11 @@ export const rejectRegistrationForm = expressAsyncHandler(async (req, res) => {
 // ============ LIST & SEARCH ============
 
 export const getRegistrationForms = expressAsyncHandler(async (req, res) => {
-  const { 
-    status, 
+  const {
+    status,
     submissionType,
     isMissingDocuments,
-    page = 1, 
+    page = 1,
     limit = 10,
     sortBy = "createdAt",
     order = "desc"
@@ -916,7 +917,7 @@ export const getRegistrationForms = expressAsyncHandler(async (req, res) => {
   // Nếu không phải admin, chỉ lấy form của user hiện tại
   const isAdmin = req.user?.role === 'admin';
   const filter = {};
-  
+
   if (!isAdmin || req.query.userId) {
     filter.userId = req.query.userId || req.user._id;
   }
@@ -930,13 +931,31 @@ export const getRegistrationForms = expressAsyncHandler(async (req, res) => {
 
   const [registrationForms, total] = await Promise.all([
     RegistrationForm.find(filter)
-      .populate("userId", "fullName email studentCode phone")
+      .populate("userId", "fullName email phoneNumber")
       .sort({ [sortBy]: sortOrder })
       .skip(skip)
       .limit(parseInt(limit))
       .lean(),
     RegistrationForm.countDocuments(filter)
   ]);
+
+  // Lấy thông tin sinh viên cho mỗi registration form
+  const userIds = registrationForms.map(form => form.userId._id);
+  const students = await Student.find({ userId: { $in: userIds } })
+    .select("studentId university major className academicYear studentStatus ktxStatus userId")
+    .lean();
+
+  // Map thông tin student vào registration forms
+  const studentMap = {};
+  students.forEach(student => {
+    studentMap[student.userId] = student;
+  });
+
+  registrationForms.forEach(form => {
+    if (form.userId && studentMap[form.userId._id]) {
+      form.studentInfo = studentMap[form.userId._id];
+    }
+  });
 
   const pagination = {
     data: registrationForms,
@@ -961,15 +980,18 @@ export const getRegistrationFormById = expressAsyncHandler(async (req, res) => {
   }
 
   const registrationForm = await RegistrationForm.findById(id)
-    .populate("userId", "fullName email studentCode phone address");
+    .populate("userId", "fullName email studentId phoneNumber address");
 
   if (!registrationForm) {
     return errorResponse(res, "Registration form not found", 404);
   }
 
-  const [documents, missingDocuments] = await Promise.all([
+  const [documents, missingDocuments, studentInfo] = await Promise.all([
     RegistrationDocument.find({ registrationForm: id }).sort({ createdAt: -1 }),
-    RegistrationMissingDocument.find({ registrationForm: id }).sort({ createdAt: -1 })
+    RegistrationMissingDocument.find({ registrationForm: id }).sort({ createdAt: -1 }),
+    Student.findOne({ userId: registrationForm.userId._id || registrationForm.userId })
+      .select("studentId university major className academicYear studentStatus ktxStatus")
+      .lean()
   ]);
 
   const signatureUrl = getSignedSignatureUrl(registrationForm.signature);
@@ -986,7 +1008,8 @@ export const getRegistrationFormById = expressAsyncHandler(async (req, res) => {
     signature: undefined,
     signatureUrl,
     documents: enrichedDocuments,
-    missingDocuments
+    missingDocuments,
+    studentInfo: studentInfo || null
   });
 });
 
@@ -1009,7 +1032,7 @@ const getStampedFormStatus = (form) => {
     return { uploaded: true };
   }
   if (!form.stampedFormDeadline) return null;
-  
+
   const daysRemaining = Math.ceil(
     (form.stampedFormDeadline - Date.now()) / (1000 * 60 * 60 * 24)
   );
@@ -1023,7 +1046,7 @@ const getStampedFormStatus = (form) => {
 
 const getPendingActions = (status, requiredDocs, stampedStatus, missingDocs) => {
   const actions = [];
-  
+
   switch (status) {
     case "missing_document":
       actions.push(`Bổ sung: ${missingDocs.map(m => m.documentType).join(", ")}`);
@@ -1032,8 +1055,8 @@ const getPendingActions = (status, requiredDocs, stampedStatus, missingDocs) => 
     case "pending":
     case "resubmitted":
       if (!requiredDocs.stampedForm) {
-        actions.push(stampedStatus?.isOverdue 
-          ? "QUÁ HẠN: Upload đơn có dấu" 
+        actions.push(stampedStatus?.isOverdue
+          ? "QUÁ HẠN: Upload đơn có dấu"
           : `Upload đơn có dấu (còn ${stampedStatus?.daysRemaining} ngày)`
         );
       }
@@ -1049,7 +1072,7 @@ const getPendingActions = (status, requiredDocs, stampedStatus, missingDocs) => 
       actions.push("Đã tiếp nhận, chờ nhập liệu");
       break;
   }
-  
+
   return actions;
 };
 
@@ -1115,7 +1138,7 @@ export const getRegistrationFormCurrent = expressAsyncHandler(async (req, res) =
 
   // Xác định type để frontend điều hướng
   const formType = active.status === "approved" ? "approved" :
-                   active.status === "rejected" ? "rejected" : "active";
+    active.status === "rejected" ? "rejected" : "active";
 
   return successResponse(res, "Active submission found", {
     hasRegistration: true,
@@ -1365,8 +1388,8 @@ export const adminUploadOfflineDocument = expressAsyncHandler(async (req, res) =
     await registrationForm.save();
   }
 
-  const canProceed = canSubmitForm(registrationForm.requiredDocuments) && 
-                     registrationForm.requiredDocuments.stampedForm;
+  const canProceed = canSubmitForm(registrationForm.requiredDocuments) &&
+    registrationForm.requiredDocuments.stampedForm;
 
   if (canProceed && !registrationForm.completedSteps.includes(3)) {
     registrationForm.completedSteps.push(3);
@@ -1377,7 +1400,7 @@ export const adminUploadOfflineDocument = expressAsyncHandler(async (req, res) =
     document,
     canProceedToProcessing: canProceed,
     requiredDocuments: registrationForm.requiredDocuments,
-    message: canProceed 
+    message: canProceed
       ? "All required documents uploaded. Ready to move to PROCESSING status."
       : "Please upload remaining required documents."
   });
@@ -1667,8 +1690,8 @@ export const assignUserToRegistrationForm = expressAsyncHandler(async (req, res)
       email: user.email,
       studentCode: user.studentCode
     },
-    note: previousUserId 
-      ? "Form was reassigned to a different user" 
+    note: previousUserId
+      ? "Form was reassigned to a different user"
       : "Form was previously unassigned and is now linked"
   });
 });
@@ -1687,9 +1710,9 @@ export const previewResidenceFormHTML = expressAsyncHandler(async (req, res) => 
   }
 
   const residenceData = registrationForm.formData?.residence || {};
-  
+
   // Đọc template HTML
-  const templatePath = path.join(__dirname, "../templates/documents/don_dang_ky_KTX.html");
+  const templatePath = path.join(__dirname, "../../templates/documents/don_dang_ky_KTX.html");
   let template = fs.readFileSync(templatePath, "utf-8");
 
   // format date
@@ -1730,7 +1753,7 @@ export const previewResidenceFormHTML = expressAsyncHandler(async (req, res) => 
   try {
     // Render file theo chuẩn EJS Engine
     const renderedHtml = ejs.render(template, templateData);
-    
+
     // Set content type và trả về HTML Output
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.send(renderedHtml);
@@ -1752,9 +1775,9 @@ export const previewTemporaryFormHTML = expressAsyncHandler(async (req, res) => 
   }
 
   const temporaryData = registrationForm.formData?.temporary || {};
-  
+
   // Đọc template HTML
-  const templatePath = path.join(__dirname, "../templates/documents/don_tam_tru_KTX.html");
+  const templatePath = path.join(__dirname, "../../templates/documents/don_tam_tru_KTX.html");
   let template = fs.readFileSync(templatePath, "utf-8");
 
   // format date
@@ -1788,7 +1811,7 @@ export const previewTemporaryFormHTML = expressAsyncHandler(async (req, res) => 
   try {
     // Render file theo chuẩn EJS Engine
     const renderedHtml = ejs.render(template, templateData);
-    
+
     // Set content type và trả về HTML Output
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.send(renderedHtml);
@@ -1998,9 +2021,9 @@ export const adminReviewDocuments = expressAsyncHandler(async (req, res) => {
 
   // Kiểm tra có phải quá hạn không
   const now = new Date();
-  const isOverdue = registrationForm.stampedFormDeadline && 
-                     now > registrationForm.stampedFormDeadline &&
-                     !registrationForm.requiredDocuments.stampedForm;
+  const isOverdue = registrationForm.stampedFormDeadline &&
+    now > registrationForm.stampedFormDeadline &&
+    !registrationForm.requiredDocuments.stampedForm;
 
   // Nếu quá hạn → auto reject
   if (isOverdue) {
@@ -2238,8 +2261,8 @@ export const getAdminStats = expressAsyncHandler(async (req, res) => {
     byStatus: {
       draft: statusMap.draft,
       active: statusMap.submitted + statusMap.pending + statusMap.processing +
-              statusMap.missing_document + statusMap.resubmitted +
-              statusMap.pending_offline + statusMap.received_offline,
+        statusMap.missing_document + statusMap.resubmitted +
+        statusMap.pending_offline + statusMap.received_offline,
       approved: statusMap.approved,
       rejected: statusMap.rejected
     },
