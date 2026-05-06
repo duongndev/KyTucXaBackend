@@ -562,53 +562,22 @@ class RoomAssignmentService {
    * @returns {Promise<Object>} - Báo cáo
    */
   async getRoomAvailabilityReport() {
-    const report = await Room.aggregate([
-      {
-        $group: {
-          _id: {
-            buildingId: "$buildingId",
-            roomType: "$roomType",
-            roomStatus: "$roomStatus",
-            gender: "$gender"
-          },
-          count: { $sum: 1 },
-          totalCapacity: { $sum: "$capacity" },
-          totalOccupancy: { $sum: "$currentOccupancy" },
-          availableSlots: {
-            $sum: { $subtract: ["$capacity", "$currentOccupancy"] }
-          }
-        }
-      },
-      {
-        $lookup: {
-          from: "buildings",
-          localField: "_id.buildingId",
-          foreignField: "_id",
-          as: "building"
-        }
-      },
-      {
-        $unwind: "$building"
-      },
-      {
-        $project: {
-          buildingCode: "$building.buildingCode",
-          buildingName: "$building.buildingName",
-          buildingType: "$building.buildingType",
-          roomType: "$_id.roomType",
-          roomStatus: "$_id.roomStatus",
-          gender: "$_id.gender",
-          count: 1,
-          totalCapacity: 1,
-          totalOccupancy: 1,
-          availableSlots: 1
-        }
-      },
-      {
-        $sort: { buildingCode: 1, roomType: 1, gender: 1 }
-      }
-    ]);
+    // Lấy chi tiết từng phòng trống
+    const availableRooms = await Room.find({
+      roomStatus: { $in: ["available", "reserved"] },
+      $expr: { $lt: ["$currentOccupancy", "$capacity"] }
+    })
+      .populate("buildingId", "buildingCode buildingName buildingType")
+      .sort({ buildingId: 1, floor: 1, roomNumber: 1 });
 
+    // Thêm trường availableSlots cho mỗi phòng
+    const details = availableRooms.map(room => ({
+      ...room.toObject(),
+      availableSlots: room.capacity - room.currentOccupancy,
+      buildingName: room.buildingId?.buildingName || 'N/A'
+    }));
+
+    // Tính thống kê tổng
     const summary = await Room.aggregate([
       {
         $group: {
@@ -624,6 +593,9 @@ class RoomAssignmentService {
           },
           maintenanceRooms: {
             $sum: { $cond: [{ $eq: ["$roomStatus", "maintenance"] }, 1, 0] }
+          },
+          availableSlots: {
+            $sum: { $subtract: ["$capacity", "$currentOccupancy"] }
           }
         }
       }
@@ -636,9 +608,10 @@ class RoomAssignmentService {
         totalOccupancy: 0,
         availableRooms: 0,
         fullRooms: 0,
-        maintenanceRooms: 0
+        maintenanceRooms: 0,
+        availableSlots: 0
       },
-      details: report,
+      details,
       generatedAt: new Date()
     };
   }

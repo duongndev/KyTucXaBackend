@@ -394,15 +394,3 @@ export const validateTemplateVersion = async (req, res, next) => {
   }
 };
 
-export {
-  validateTemplateAccess,
-  checkFormOwnership,
-  validateStatusTransition,
-  validateWorkflowStep,
-  validateFileUpload,
-  validateDataIntegrity,
-  rateLimitFormSubmission,
-  validateFormCompletion,
-  logFormAccess,
-  validateTemplateVersion
-};

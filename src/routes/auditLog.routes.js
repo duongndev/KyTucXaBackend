@@ -1,6 +1,6 @@
 import express from "express";
 const router = express.Router();
-import * as auditLogCtrl from "../controllers/auditLog.controller.js";
+import * as auditLogCtrl from "../controllers/auditLog/auditLog.controller.js";
 import { protect, authorize } from "../middlewares/auth.middlewares.js";
 
 // Protected routes (admin only)

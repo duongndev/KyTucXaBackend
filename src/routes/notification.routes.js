@@ -1,5 +1,5 @@
 import express from "express";
-import * as notificationContrl from "../controllers/notification.controller.js";
+import * as notificationContrl from "../controllers/notification/notification.controller.js";
 import { authorize, protect } from "../middlewares/auth.middlewares.js";
 
 const router = express.Router();

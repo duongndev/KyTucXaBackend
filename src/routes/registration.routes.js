@@ -1,5 +1,6 @@
 import express from 'express';
-import * as registrationCtrl from '../controllers/registration.controller.js';
+import * as registrationCtrl from '../controllers/registration/registration.controller.js';
+import * as registrationAdminCtrl from '../controllers/admin/registrationAdmin.controller.js';
 import { protect, authorize } from '../middlewares/auth.middlewares.js';
 import {
   uploadImageMiddleware,
@@ -10,7 +11,6 @@ const router = express.Router();
 
 // Get status & progress
 router.get('/:id/status', registrationCtrl.getRegistrationStatus);
-
 
 // Preview forms
 router.get('/preview-residence/:id', registrationCtrl.previewResidenceFormHTML);
@@ -27,7 +27,6 @@ router.patch('/:id/step1', registrationCtrl.saveStep1);
 router.patch('/:id/step2', registrationCtrl.saveStep2);
 
 // Document upload — sensitive (CCCD / thẻ SV): multipart/form-data, field "image"
-// Backend tự upload lên Cloudinary authenticated, Frontend KHÔNG trực tiếp upload lên Cloudinary
 router.post(
   '/:id/documents/sensitive',
   uploadImageMiddleware,
@@ -44,19 +43,14 @@ router.post('/:id/submit', registrationCtrl.submitRegistrationForm);
 // Upload stamped form after submission
 router.post('/:id/stamped-form', registrationCtrl.uploadStampedForm);
 
-// Get status & progress
-// router.get('/:id/status', registrationCtrl.getRegistrationStatus);
-
 // Get user's forms
 router.get('/my-forms', registrationCtrl.getRegistrationForms);
 
-// Get current registration state (draft OR active) - gộp 2 API trong 1
+// Get current registration state (draft OR active)
 router.get('/my-current', registrationCtrl.getRegistrationFormCurrent);
 
 // Claim form (link offline form to user account)
 router.post('/claim-form', registrationCtrl.claimRegistrationForm);
-
-
 
 // Get single form by ID
 router.get('/:id', registrationCtrl.getRegistrationFormById);
@@ -64,45 +58,37 @@ router.get('/:id', registrationCtrl.getRegistrationFormById);
 // Delete draft form
 router.delete('/:id', registrationCtrl.deleteRegistrationForm);
 
-// Admin routes
+// ============ ADMIN ROUTES ============
 router.use(authorize('admin'));
 
 // List all forms (admin)
 router.get('/', registrationCtrl.getRegistrationForms);
 
-// Admin actions
-router.patch('/:id/request-missing', registrationCtrl.requestMissingDocuments);
-router.patch('/:id/approve', registrationCtrl.approveRegistrationForm);
-router.patch('/:id/reject', registrationCtrl.rejectRegistrationForm);
+// Admin: Actions
+router.patch('/:id/request-missing', registrationAdminCtrl.requestMissingDocuments);
+router.patch('/:id/approve', registrationAdminCtrl.approveRegistrationForm);
+router.patch('/:id/reject', registrationAdminCtrl.rejectRegistrationForm);
 
-// Admin: Confirm single form (submitted → pending) - Step 1
-router.patch('/:id/confirm', registrationCtrl.adminConfirmSingleForm);
+// Admin: Confirm single/batch forms
+router.patch('/:id/confirm', registrationAdminCtrl.adminConfirmSingleForm);
+router.post('/admin/confirm', registrationAdminCtrl.adminConfirmForms);
 
 // Admin: Dashboard stats
-router.get('/admin/stats', registrationCtrl.getAdminStats);
+router.get('/admin/stats', registrationAdminCtrl.getAdminStats);
 
-// Admin: Batch confirm forms (submitted → pending) - Step 1
-router.post('/admin/confirm', registrationCtrl.adminConfirmForms);
+// Admin: Check overdue forms
+router.post('/admin/check-overdue', registrationAdminCtrl.adminCheckOverdueForms);
 
-// Admin: Check overdue forms and auto-reject
-router.post('/admin/check-overdue', registrationCtrl.adminCheckOverdueForms);
+// Admin: Review documents
+router.post('/:id/review-documents', registrationAdminCtrl.adminReviewDocuments);
 
-// Admin: Review documents and decide (approve | missing_document | reject) - Step 2
-router.post('/:id/review-documents', registrationCtrl.adminReviewDocuments);
+// Admin: Offline form management
+router.post('/:id/mark-received', registrationAdminCtrl.markOfflineFormReceived);
+router.patch('/:id/offline-data', registrationAdminCtrl.adminSaveOfflineFormData);
+router.post('/:id/offline-documents', registrationAdminCtrl.adminUploadOfflineDocument);
+router.patch('/:id/processing', registrationAdminCtrl.moveToProcessing);
 
-// Offline submission - mark as received (new flow: pending_offline -> received_offline)
-router.post('/:id/mark-received', registrationCtrl.markOfflineFormReceived);
-
-// Admin: Enter offline form data (Step 1 & 2)
-router.patch('/:id/offline-data', registrationCtrl.adminSaveOfflineFormData);
-
-// Admin: Upload scanned documents for offline form
-router.post('/:id/offline-documents', registrationCtrl.adminUploadOfflineDocument);
-
-// Admin: Move to processing
-router.patch('/:id/processing', registrationCtrl.moveToProcessing);
-
-// Admin: Assign user to form (for linking offline forms to user accounts)
-router.patch('/:id/assign-user', registrationCtrl.assignUserToRegistrationForm);
+// Admin: User assignment
+router.patch('/:id/assign-user', registrationAdminCtrl.assignUserToRegistrationForm);
 
 export default router;

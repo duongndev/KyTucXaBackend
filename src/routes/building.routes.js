@@ -1,5 +1,5 @@
 import express from "express";
-import * as buildingCtrl from "../controllers/building.controller.js";
+import * as buildingCtrl from "../controllers/building/building.controller.js";
 import { protect, authorize } from "../middlewares/auth.middlewares.js";
 import {
   validate,

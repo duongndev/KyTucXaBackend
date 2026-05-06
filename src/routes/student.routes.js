@@ -1,5 +1,5 @@
 import express from "express";
-import * as studentCtrl from "../controllers/student.controller.js";
+import * as studentCtrl from "../controllers/student/student.controller.js";
 import { protect, authorize } from "../middlewares/auth.middlewares.js";
 import { validateQuery } from "../validators/building.validator.js";
 import Joi from "joi";

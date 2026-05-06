@@ -1,6 +1,5 @@
-import Document from "../models/document.model.js";
-import Student from "../models/student.model.js";
-import User from "../models/user.model.js";
+import { RegistrationDocument } from "../models/index.js";
+import { User } from "../models/index.js";
 
 // Check if user can access document
 export const canAccessDocument = async (req, res, next) => {
@@ -10,7 +9,7 @@ export const canAccessDocument = async (req, res, next) => {
     const userRole = req.user.role;
 
     // Find document
-    const document = await Document.findById(documentId);
+    const document = await RegistrationDocument.findById(documentId);
     if (!document) {
       return res.status(404).json({
         success: false,
@@ -32,7 +31,7 @@ export const canAccessDocument = async (req, res, next) => {
 
     // Check if user owns the student record this document belongs to
     if (document.owner.model === 'Student') {
-      const student = await Student.findById(document.owner.id);
+      const student = await User.findById(document.owner.id);
       if (student && student.userId.toString() === userId) {
         req.document = document;
         return next();
@@ -41,7 +40,7 @@ export const canAccessDocument = async (req, res, next) => {
 
     // Check if user owns the registration this document belongs to
     if (document.owner.model === 'Registration') {
-      const registration = await (await import('../models/registration.model.js')).default.findById(document.owner.id).populate('student');
+      const registration = await (await import('../models/registration/registrationForm.model.js')).default.findById(document.owner.id).populate('student');
       if (registration && registration.student.userId.toString() === userId) {
         req.document = document;
         return next();
@@ -70,7 +69,7 @@ export const canModifyDocument = async (req, res, next) => {
     const userRole = req.user.role;
 
     // Find document
-    const document = await Document.findById(documentId);
+    const document = await RegistrationDocument.findById(documentId);
     if (!document) {
       return res.status(404).json({
         success: false,
@@ -112,7 +111,7 @@ export const canDeleteDocument = async (req, res, next) => {
     const userRole = req.user.role;
 
     // Find document
-    const document = await Document.findById(documentId);
+    const document = await RegistrationDocument.findById(documentId);
     if (!document) {
       return res.status(404).json({
         success: false,
@@ -159,7 +158,7 @@ export const canViewStudentDocuments = async (req, res, next) => {
     }
 
     // Find student
-    const student = await Student.findOne({ studentId });
+    const student = await User.findOne({ studentId });
     if (!student) {
       return res.status(404).json({
         success: false,

@@ -35,7 +35,7 @@ import {
   uploadAvatarController,
   uploadMultipleController,
   deleteFileController,
-} from "../controllers/upload.controller.js";
+} from "../controllers/upload/upload.controller.js";
 
 const router = express.Router();
 

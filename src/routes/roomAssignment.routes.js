@@ -1,5 +1,5 @@
 import express from "express";
-import * as assignmentCtrl from "../controllers/roomAssignment.controller.js";
+import * as assignmentCtrl from "../controllers/roomAssignment/roomAssignment.controller.js";
 import { protect, authorize } from "../middlewares/auth.middlewares.js";
 import {
   validate,

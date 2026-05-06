@@ -8,7 +8,8 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "create-admin": "node script/create-admin.js",
-    "seed": "node script/seed-data.js"
+    "seed": "node script/seed-data.js",
+    "seed:complete": "node script/seed-complete-data-v2.js"
   },
   "keywords": [],
   "author": "duongnd",

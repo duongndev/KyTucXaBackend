@@ -1,5 +1,5 @@
 import express from "express";
-import * as roomCtrl from "../controllers/room.controller.js";
+import * as roomCtrl from "../controllers/building/room.controller.js";
 import { protect, authorize } from "../middlewares/auth.middlewares.js";
 import {
   validate,
